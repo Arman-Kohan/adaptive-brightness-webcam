@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import ctypes
 import queue
 import sys
 import tempfile
@@ -103,7 +104,7 @@ class BrightnessApp(ctk.CTk):
         self.toast_job = None
 
         self.camera_var = ctk.StringVar(value="0")
-        self.interval_var = ctk.StringVar(value="60")
+        self.interval_var = ctk.StringVar(value="120")
         self.preset_var = ctk.StringVar(value="60")
         self.startup_var = ctk.BooleanVar(value=self.startup_enabled())
         self.auto_theme_var = ctk.BooleanVar(value=True)
@@ -188,8 +189,8 @@ class BrightnessApp(ctk.CTk):
         ctk.CTkLabel(form,text="CHECK INTERVAL",font=("Segoe UI",9,"bold"),text_color=("gray40","gray60")).pack(anchor="w")
         interval=ctk.CTkFrame(form,fg_color="transparent"); interval.pack(anchor="w",pady=(6,8))
         ctk.CTkEntry(interval,textvariable=self.interval_var,width=85,height=38,corner_radius=10).pack(side="left")
-        ctk.CTkLabel(interval,text="seconds - minimum 10",font=("Segoe UI",9),text_color=("gray40","gray60")).pack(side="left",padx=12)
-        ctk.CTkSegmentedButton(form,values=["30","60","120"],variable=self.preset_var,command=lambda v:self.interval_var.set(v),height=36,corner_radius=10).pack(anchor="w",pady=(0,18))
+        ctk.CTkLabel(interval,text="seconds - minimum 30; battery mode adds extra delay",font=("Segoe UI",9),text_color=("gray40","gray60")).pack(side="left",padx=12)
+        ctk.CTkSegmentedButton(form,values=["120","300","600"],variable=self.preset_var,command=lambda v:self.interval_var.set(v),height=36,corner_radius=10).pack(anchor="w",pady=(0,18))
         ctk.CTkSwitch(form,text="Launch automatically with Windows",variable=self.startup_var,command=self.toggle_startup,font=("Segoe UI",10)).pack(anchor="w",pady=(4,0))
         ctk.CTkSwitch(form,text="Auto light/dark theme by time of day",variable=self.auto_theme_var,command=self.toggle_auto_theme,font=("Segoe UI",10)).pack(anchor="w",pady=(8,0))
         ctk.CTkSwitch(form,text="Close to system tray",variable=self.close_to_tray_var,font=("Segoe UI",10)).pack(anchor="w",pady=(8,0))
@@ -230,7 +231,7 @@ class BrightnessApp(ctk.CTk):
 
     def start(self):
         if self.worker_thread and self.worker_thread.is_alive() and self.is_running: return
-        try: camera=int(self.camera_var.get()); interval=max(10.0,float(self.interval_var.get()))
+        try: camera=int(self.camera_var.get()); interval=max(30.0,float(self.interval_var.get()))
         except ValueError: self.show_toast("Enter a valid camera number and interval.","error"); return
         self.stop_event.clear(); self.worker_generation+=1; gen=self.worker_generation
         self.worker_thread=threading.Thread(target=self.worker,args=(camera,interval,gen),daemon=True); self.worker_thread.start()
@@ -254,7 +255,27 @@ class BrightnessApp(ctk.CTk):
                     last_target=target; self.events.put(("reading",(value,target)))
             except Exception as exc:
                 logging.exception("Brightness update failed"); self.events.put(("status",("Update failed",str(exc),"error")))
-            self.stop_event.wait(interval)
+            self.stop_event.wait(self.power_aware_interval(interval))
+
+    @staticmethod
+    def power_aware_interval(base_interval):
+        """Reduce webcam wakeups while the laptop is running on battery."""
+        try:
+            class SystemPowerStatus(ctypes.Structure):
+                _fields_ = [("ACLineStatus", ctypes.c_ubyte),
+                            ("BatteryFlag", ctypes.c_ubyte),
+                            ("BatteryLifePercent", ctypes.c_ubyte),
+                            ("Reserved", ctypes.c_ubyte),
+                            ("BatteryLifeTime", ctypes.c_ulong),
+                            ("BatteryFullLifeTime", ctypes.c_ulong)]
+
+            status = SystemPowerStatus()
+            if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+                if status.ACLineStatus == 0:
+                    return max(base_interval * 2.5, 300.0)
+        except Exception:
+            pass
+        return base_interval
 
     def test_once(self):
         if self.testing: return
