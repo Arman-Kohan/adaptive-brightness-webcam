@@ -108,9 +108,9 @@ class BrightnessApp(ctk.CTk):
         self.startup_var = ctk.BooleanVar(value=self.startup_enabled())
         self.auto_theme_var = ctk.BooleanVar(value=True)
         self.close_to_tray_var = ctk.BooleanVar(value=True)
-        self.last_value_var = ctk.StringVar(value="â€”")
-        self.last_target_var = ctk.StringVar(value="â€”")
-        self.last_update_var = ctk.StringVar(value="â€”")
+        self.last_value_var = ctk.StringVar(value="-")
+        self.last_target_var = ctk.StringVar(value="-")
+        self.last_update_var = ctk.StringVar(value="-")
 
         self.build_ui()
         self.center_window()
@@ -157,7 +157,7 @@ class BrightnessApp(ctk.CTk):
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3,column=0,sticky="ew",padx=28,pady=(8,22)); footer.grid_columnconfigure(1,weight=1)
-        ctk.CTkLabel(footer,text="Privacy first Â· No images are stored or uploaded",font=("Segoe UI",9),text_color=("gray40","gray60")).grid(row=0,column=0,sticky="w")
+        ctk.CTkLabel(footer,text="Privacy first - No images are stored or uploaded",font=("Segoe UI",9),text_color=("gray40","gray60")).grid(row=0,column=0,sticky="w")
         self.toast = ctk.CTkLabel(footer,text="",font=("Segoe UI",9),text_color=ACCENT); self.toast.grid(row=0,column=1,sticky="w",padx=16)
         self.test_btn = ctk.CTkButton(footer,text="Test camera",command=self.test_once,width=135,height=40,corner_radius=11,fg_color="transparent",hover_color=("gray85","gray25"),text_color=ACCENT,border_width=2,border_color=ACCENT,font=("Segoe UI",10,"bold"))
         self.test_btn.grid(row=0,column=2,sticky="e")
@@ -166,7 +166,7 @@ class BrightnessApp(ctk.CTk):
         inner=ctk.CTkFrame(parent,fg_color="transparent"); inner.pack(fill="x",padx=22,pady=18)
         left=ctk.CTkFrame(inner,fg_color="transparent"); left.pack(side="left",fill="x",expand=True)
         row=ctk.CTkFrame(left,fg_color="transparent"); row.pack(anchor="w")
-        self.status_dot=ctk.CTkLabel(row,text="â—",font=("Segoe UI",17),text_color="gray50"); self.status_dot.pack(side="left",padx=(0,10))
+        self.status_dot=ctk.CTkLabel(row,text="o",font=("Segoe UI",17),text_color="gray50"); self.status_dot.pack(side="left",padx=(0,10))
         self.status_label=ctk.CTkLabel(row,text="Ready to start",font=("Segoe UI",15,"bold")); self.status_label.pack(side="left")
         self.status_sub=ctk.CTkLabel(left,text="Start automation to adjust brightness automatically.",font=("Segoe UI",9),text_color=("gray40","gray60")); self.status_sub.pack(anchor="w",pady=(4,0))
         buttons=ctk.CTkFrame(inner,fg_color="transparent"); buttons.pack(side="right")
@@ -188,7 +188,7 @@ class BrightnessApp(ctk.CTk):
         ctk.CTkLabel(form,text="CHECK INTERVAL",font=("Segoe UI",9,"bold"),text_color=("gray40","gray60")).pack(anchor="w")
         interval=ctk.CTkFrame(form,fg_color="transparent"); interval.pack(anchor="w",pady=(6,8))
         ctk.CTkEntry(interval,textvariable=self.interval_var,width=85,height=38,corner_radius=10).pack(side="left")
-        ctk.CTkLabel(interval,text="seconds Â· minimum 10",font=("Segoe UI",9),text_color=("gray40","gray60")).pack(side="left",padx=12)
+        ctk.CTkLabel(interval,text="seconds - minimum 10",font=("Segoe UI",9),text_color=("gray40","gray60")).pack(side="left",padx=12)
         ctk.CTkSegmentedButton(form,values=["30","60","120"],variable=self.preset_var,command=lambda v:self.interval_var.set(v),height=36,corner_radius=10).pack(anchor="w",pady=(0,18))
         ctk.CTkSwitch(form,text="Launch automatically with Windows",variable=self.startup_var,command=self.toggle_startup,font=("Segoe UI",10)).pack(anchor="w",pady=(4,0))
         ctk.CTkSwitch(form,text="Auto light/dark theme by time of day",variable=self.auto_theme_var,command=self.toggle_auto_theme,font=("Segoe UI",10)).pack(anchor="w",pady=(8,0))
@@ -279,7 +279,7 @@ class BrightnessApp(ctk.CTk):
                     if self.is_running: self.set_status("Running","Monitoring ambient light","running")
                 elif kind=="status": self.set_status(*payload)
                 elif kind=="test_done":
-                    value,target=payload; self.last_value_var.set(f"{value:.1f}"); self.last_target_var.set(f"{target}%"); self.progress.set(target/100); self.last_update_var.set(datetime.now().strftime("%H:%M:%S")); self.testing=False; self.test_btn.configure(state="normal"); self.set_status("Test complete","Camera sample captured","success"); self.show_toast(f"Ambient {value:.1f} â†’ Target {target}%","success")
+                    value,target=payload; self.last_value_var.set(f"{value:.1f}"); self.last_target_var.set(f"{target}%"); self.progress.set(target/100); self.last_update_var.set(datetime.now().strftime("%H:%M:%S")); self.testing=False; self.test_btn.configure(state="normal"); self.set_status("Test complete","Camera sample captured","success"); self.show_toast(f"Ambient {value:.1f} -> Target {target}%","success")
                 elif kind=="test_error": self.testing=False; self.test_btn.configure(state="normal"); self.set_status("Camera error",str(payload),"error"); self.show_toast(str(payload),"error")
                 elif kind=="tray": {"show":self.show_window,"start":self.start,"stop":self.stop,"quit":self.quit_app}.get(payload,lambda:())()
         except queue.Empty: pass
