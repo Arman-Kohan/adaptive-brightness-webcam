@@ -1,5 +1,9 @@
 # Adaptive Brightness Webcam
 
+<p align="center">
+  <img src="assets/adaptive-brightness-poster.png" alt="Adaptive Brightness Webcam — automatic Windows brightness adjustment using your webcam" width="100%">
+</p>
+
 A Windows 10/11 app that adjusts display brightness automatically using short webcam light samples.
 
 یک برنامه برای ویندوز ۱۰ و ۱۱ که با نمونه‌برداری کوتاه از نور محیط توسط وب‌کم، روشنایی نمایشگر را به‌صورت خودکار تنظیم می‌کند.
@@ -52,7 +56,7 @@ To build the Windows executable:
 برای ساخت فایل اجرایی ویندوز:
 
 ```powershell
-.\build.ps1
+.\\build.ps1
 ```
 
 The project is licensed under the MIT License.
