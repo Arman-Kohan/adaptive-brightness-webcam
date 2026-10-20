@@ -1,0 +1,43 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build executable
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\AdaptiveBrightnessWebcam.exe, README.md, app_icon.ico -DestinationPath dist\AdaptiveBrightnessWebcam-Windows.zip -Force
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Adaptive Brightness Webcam ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/AdaptiveBrightnessWebcam.exe
+            dist/AdaptiveBrightnessWebcam-Windows.zip
