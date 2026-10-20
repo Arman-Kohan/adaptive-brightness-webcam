@@ -2,8 +2,8 @@ name: Build Windows Release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
 
 permissions:
   contents: write
@@ -36,9 +36,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.2
-          target_commitish: main
-          name: Adaptive Brightness Webcam v1.0.2
+          name: Adaptive Brightness Webcam ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             dist/AdaptiveBrightnessWebcam.exe
