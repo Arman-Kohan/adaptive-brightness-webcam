@@ -1,5 +1,7 @@
 # Adaptive Brightness Webcam
 
+Ø±Ø§Ù‡Ù†Ù…Ø§ÛŒ ÙØ§Ø±Ø³ÛŒ: [README.fa.md](README.fa.md)
+
 Smooth Windows display brightness adjustment for laptops without a usable ambient-light sensor.
 
 The program briefly samples the built-in webcam, maps the scene brightness to a comfortable display range, and applies changes gradually. It does not keep the camera open continuously and launches no console windows.
