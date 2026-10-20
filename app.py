@@ -26,6 +26,7 @@ import customtkinter as ctk
 import adaptive_brightness as engine
 
 APP_NAME = "Adaptive Brightness Webcam"
+AUTOSTART_FLAG = "--autostart"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 ACCENT = "#4C7DF0"
 ACCENT_HOVER = "#3A68E0"
@@ -118,6 +119,7 @@ class BrightnessApp(ctk.CTk):
         self.after(150, self.process_events)
         self.after(30000, self.auto_theme_tick)
         self.start_tray()
+        self.ensure_startup_command()
 
     def center_window(self) -> None:
         self.update_idletasks()
@@ -323,8 +325,17 @@ class BrightnessApp(ctk.CTk):
 
     @staticmethod
     def startup_command():
-        if getattr(sys,"frozen",False): return f'"{sys.executable}"'
-        return f'"{Path(sys.executable).with_name("pythonw.exe")}" "{Path(__file__).resolve()}"'
+        if getattr(sys,"frozen",False): return f'"{sys.executable}" {AUTOSTART_FLAG}'
+        return f'"{Path(sys.executable).with_name("pythonw.exe")}" "{Path(__file__).resolve()}" {AUTOSTART_FLAG}'
+
+    def ensure_startup_command(self):
+        if not self.startup_var.get(): return
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,STARTUP_KEY,0,winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key,APP_NAME,0,winreg.REG_SZ,self.startup_command())
+        except OSError:
+            pass
 
     def toggle_startup(self):
         try:
@@ -343,6 +354,10 @@ class BrightnessApp(ctk.CTk):
         self.tray_icon=pystray.Icon(APP_NAME,self.app_icon.resize((64,64),Image.LANCZOS),APP_NAME,menu)
         self.tray_thread=threading.Thread(target=self.tray_icon.run,daemon=True); self.tray_thread.start()
 
+    def launch_autostart(self):
+        self.start()
+        if self.tray_icon is not None: self.withdraw()
+
     def show_window(self): self.deiconify(); self.lift(); self.focus_force()
     def quit_app(self): self.close_to_tray_var.set(False); self.on_close()
     def on_close(self):
@@ -354,6 +369,11 @@ class BrightnessApp(ctk.CTk):
         self.destroy()
 
 
-if __name__ == "__main__":
+def main():
     ctk.set_default_color_theme("blue")
-    BrightnessApp().mainloop()
+    app=BrightnessApp()
+    if AUTOSTART_FLAG in sys.argv: app.after(400,app.launch_autostart)
+    app.mainloop()
+
+
+if __name__ == "__main__": main()
