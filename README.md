@@ -1,47 +1,28 @@
 # Adaptive Brightness Webcam
 
-راهنمای فارسی: [README.fa.md](README.fa.md)
+Ø¨Ø±Ù†Ø§Ù…Ù‡Ù” ÙˆÛŒÙ†Ø¯ÙˆØ²ÛŒ Ø¨Ø±Ø§ÛŒ ØªÙ†Ø¸ÛŒÙ… ØªØ¯Ø±ÛŒØ¬ÛŒ Ø±ÙˆØ´Ù†Ø§ÛŒÛŒ ØµÙØ­Ù‡ Ø¨Ø± Ø§Ø³Ø§Ø³ Ù†ÙˆØ± Ù…Ø­ÛŒØ·ÛŒ Ú©Ù‡ ÙˆØ¨â€ŒÚ©Ù… Ù…ÛŒâ€ŒØ¨ÛŒÙ†Ø¯.
 
-Smooth Windows display brightness adjustment for laptops without a usable ambient-light sensor.
-
-The program briefly samples the built-in webcam, maps the scene brightness to a comfortable display range, and applies changes gradually. It does not keep the camera open continuously and launches no console windows.
-
-## Important privacy note
-
-This uses a webcam as a light sensor. The camera privacy LED may turn on briefly during sampling. Many laptops hard-wire that LED to camera use; this project does not bypass or disable it. For completely silent light sensing, use a real ambient-light sensor or an external USB sensor.
-
-## Requirements
-
-- Windows 10 or 11
-- Python 3.10+
-- A webcam
-- `powercfg` access to display brightness
-
-## Install and test
+## Ø§Ø¬Ø±Ø§ÛŒ ØªÙˆØ³Ø¹Ù‡â€ŒØ§ÛŒ
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python adaptive_brightness.py --camera 0 --once
+python app.py
 ```
 
-If camera `0` is not the correct device, try `--camera 1`.
+The desktop interface uses CustomTkinter, Pillow, and pystray for its Windows 11-style appearance, generated application icon, automatic theme, and system-tray controls.
 
-## Run continuously
+Ø§Ø² Ø¯Ø§Ø®Ù„ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ø¯ÙˆØ±Ø¨ÛŒÙ†ØŒ ÙØ§ØµÙ„Ù‡Ù” Ø¨Ø±Ø±Ø³ÛŒ Ùˆ Ø§Ø¬Ø±Ø§ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø± Ù¾Ø³ Ø§Ø² ÙˆØ±ÙˆØ¯ Ø¨Ù‡ ÙˆÛŒÙ†Ø¯ÙˆØ² Ø±Ø§ Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯.
+
+## Ø³Ø§Ø®Øª ÙØ§ÛŒÙ„ Ø§Ø¬Ø±Ø§ÛŒÛŒ
 
 ```powershell
-pythonw adaptive_brightness.py --camera 0 --interval 60
+.\build.ps1
 ```
 
-To start it automatically after sign-in, add a shortcut to the command above in `shell:startup`, or create a per-user Scheduled Task. Use `pythonw.exe` to avoid a console window.
+ÙØ§ÛŒÙ„ Ø§Ø¬Ø±Ø§ÛŒÛŒ Ù…Ø³ØªÙ‚Ù„ Ø¯Ø± `dist\AdaptiveBrightnessWebcam.exe` Ø³Ø§Ø®ØªÙ‡ Ù…ÛŒâ€ŒØ´ÙˆØ¯. Ø¨Ø±Ø§ÛŒ Ø³Ø§Ø®Øª Ù†ØµØ¨â€ŒÚ©Ù†Ù†Ø¯Ù‡ØŒ ÙØ§ÛŒÙ„ `installer.iss` Ø±Ø§ Ø¨Ø§ Inno Setup Ú©Ø§Ù…Ù¾Ø§ÛŒÙ„ Ú©Ù†ÛŒØ¯.
 
-## Tuning
+## Ø­Ø±ÛŒÙ… Ø®ØµÙˆØµÛŒ Ùˆ Ù…Ø­Ø¯ÙˆØ¯ÛŒØªâ€ŒÙ‡Ø§
 
-- `--interval 60`: seconds between samples.
-- `value_to_brightness`: adjust the comfortable minimum/maximum range.
-- `ramp_brightness`: controls how gradually brightness changes.
+Ù‡ÛŒÚ† ØªØµÙˆÛŒØ± ÛŒØ§ ÙˆÛŒØ¯ÛŒÙˆÛŒÛŒ Ø°Ø®ÛŒØ±Ù‡ ÛŒØ§ Ø§Ø±Ø³Ø§Ù„ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯. ÙˆØ¨â€ŒÚ©Ù… ÙÙ‚Ø· Ø¨Ø±Ø§ÛŒ Ú†Ù†Ø¯ Ù„Ø­Ø¸Ù‡ Ø¯Ø± Ù‡Ø± Ù†Ù…ÙˆÙ†Ù‡â€ŒØ¨Ø±Ø¯Ø§Ø±ÛŒ ÙØ¹Ø§Ù„ Ø§Ø³Øª Ùˆ Ú†Ø±Ø§Øº Ø­Ø±ÛŒÙ… Ø®ØµÙˆØµÛŒ Ù…Ù…Ú©Ù† Ø§Ø³Øª Ø±ÙˆØ´Ù† Ø´ÙˆØ¯. Ú©Ù†ØªØ±Ù„ `powercfg` Ø¨Ø±Ø§ÛŒ Ù†Ù…Ø§ÛŒØ´Ú¯Ø± Ø¯Ø§Ø®Ù„ÛŒ Ù„Ù¾â€ŒØªØ§Ù¾ Ù…Ù†Ø§Ø³Ø¨â€ŒØªØ± Ø§Ø² Ù…Ø§Ù†ÛŒØªÙˆØ± Ø®Ø§Ø±Ø¬ÛŒ Ø§Ø³Øª.
 
-## License
-
-MIT.
+Ù…Ø¬ÙˆØ² Ù¾Ø±ÙˆÚ˜Ù‡ MIT Ø§Ø³Øª.

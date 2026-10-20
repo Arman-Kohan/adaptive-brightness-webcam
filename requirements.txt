@@ -1,2 +1,8 @@
 opencv-python>=4.8
-
+pyinstaller>=6.0
+customtkinter>=5.2
+pystray>=0.19
+pillow>=10.0
+customtkinter>=5.2
+pystray>=0.19
+pillow>=10.0
