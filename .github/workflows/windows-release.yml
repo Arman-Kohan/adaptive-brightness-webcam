@@ -35,7 +35,7 @@ jobs:
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
-        with
+        with:
           tag_name: v1.0.2
           target_commitish: main
           name: Adaptive Brightness Webcam v1.0.2
