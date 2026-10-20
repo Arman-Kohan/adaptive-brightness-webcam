@@ -372,7 +372,9 @@ class BrightnessApp(ctk.CTk):
 def main():
     ctk.set_default_color_theme("blue")
     app=BrightnessApp()
-    if AUTOSTART_FLAG in sys.argv: app.after(400,app.launch_autostart)
+    if AUTOSTART_FLAG in sys.argv:
+        app.withdraw()
+        app.after(400,app.launch_autostart)
     app.mainloop()
 
 
