@@ -1,28 +1,35 @@
 # Adaptive Brightness Webcam
 
-Ø¨Ø±Ù†Ø§Ù…Ù‡Ù” ÙˆÛŒÙ†Ø¯ÙˆØ²ÛŒ Ø¨Ø±Ø§ÛŒ ØªÙ†Ø¸ÛŒÙ… ØªØ¯Ø±ÛŒØ¬ÛŒ Ø±ÙˆØ´Ù†Ø§ÛŒÛŒ ØµÙØ­Ù‡ Ø¨Ø± Ø§Ø³Ø§Ø³ Ù†ÙˆØ± Ù…Ø­ÛŒØ·ÛŒ Ú©Ù‡ ÙˆØ¨â€ŒÚ©Ù… Ù…ÛŒâ€ŒØ¨ÛŒÙ†Ø¯.
+Windows 10/11 app that adjusts display brightness from short webcam light samples.
 
-## Ø§Ø¬Ø±Ø§ÛŒ ØªÙˆØ³Ø¹Ù‡â€ŒØ§ÛŒ
+## Features
+
+- Modern Windows 11-style desktop interface.
+- Automatic light and dark theme by time of day.
+- System tray controls.
+- Optional launch at Windows sign-in.
+- No camera images are saved or uploaded.
+
+## Development
 
 ```powershell
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-The desktop interface uses CustomTkinter, Pillow, and pystray for its Windows 11-style appearance, generated application icon, automatic theme, and system-tray controls.
-
-Ø§Ø² Ø¯Ø§Ø®Ù„ Ø¨Ø±Ù†Ø§Ù…Ù‡ Ø¯ÙˆØ±Ø¨ÛŒÙ†ØŒ ÙØ§ØµÙ„Ù‡Ù” Ø¨Ø±Ø±Ø³ÛŒ Ùˆ Ø§Ø¬Ø±Ø§ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø± Ù¾Ø³ Ø§Ø² ÙˆØ±ÙˆØ¯ Ø¨Ù‡ ÙˆÛŒÙ†Ø¯ÙˆØ² Ø±Ø§ Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯.
-
-## Ø³Ø§Ø®Øª ÙØ§ÛŒÙ„ Ø§Ø¬Ø±Ø§ÛŒÛŒ
+## Build the Windows executable
 
 ```powershell
 .\build.ps1
 ```
 
-ÙØ§ÛŒÙ„ Ø§Ø¬Ø±Ø§ÛŒÛŒ Ù…Ø³ØªÙ‚Ù„ Ø¯Ø± `dist\AdaptiveBrightnessWebcam.exe` Ø³Ø§Ø®ØªÙ‡ Ù…ÛŒâ€ŒØ´ÙˆØ¯. Ø¨Ø±Ø§ÛŒ Ø³Ø§Ø®Øª Ù†ØµØ¨â€ŒÚ©Ù†Ù†Ø¯Ù‡ØŒ ÙØ§ÛŒÙ„ `installer.iss` Ø±Ø§ Ø¨Ø§ Inno Setup Ú©Ø§Ù…Ù¾Ø§ÛŒÙ„ Ú©Ù†ÛŒØ¯.
+The standalone executable is created at `dist\\AdaptiveBrightnessWebcam.exe`.
+The build includes CustomTkinter, Pillow, pystray, OpenCV, and a generated app icon.
 
-## Ø­Ø±ÛŒÙ… Ø®ØµÙˆØµÛŒ Ùˆ Ù…Ø­Ø¯ÙˆØ¯ÛŒØªâ€ŒÙ‡Ø§
+To create an installer, compile `installer.iss` with Inno Setup.
 
-Ù‡ÛŒÚ† ØªØµÙˆÛŒØ± ÛŒØ§ ÙˆÛŒØ¯ÛŒÙˆÛŒÛŒ Ø°Ø®ÛŒØ±Ù‡ ÛŒØ§ Ø§Ø±Ø³Ø§Ù„ Ù†Ù…ÛŒâ€ŒØ´ÙˆØ¯. ÙˆØ¨â€ŒÚ©Ù… ÙÙ‚Ø· Ø¨Ø±Ø§ÛŒ Ú†Ù†Ø¯ Ù„Ø­Ø¸Ù‡ Ø¯Ø± Ù‡Ø± Ù†Ù…ÙˆÙ†Ù‡â€ŒØ¨Ø±Ø¯Ø§Ø±ÛŒ ÙØ¹Ø§Ù„ Ø§Ø³Øª Ùˆ Ú†Ø±Ø§Øº Ø­Ø±ÛŒÙ… Ø®ØµÙˆØµÛŒ Ù…Ù…Ú©Ù† Ø§Ø³Øª Ø±ÙˆØ´Ù† Ø´ÙˆØ¯. Ú©Ù†ØªØ±Ù„ `powercfg` Ø¨Ø±Ø§ÛŒ Ù†Ù…Ø§ÛŒØ´Ú¯Ø± Ø¯Ø§Ø®Ù„ÛŒ Ù„Ù¾â€ŒØªØ§Ù¾ Ù…Ù†Ø§Ø³Ø¨â€ŒØªØ± Ø§Ø² Ù…Ø§Ù†ÛŒØªÙˆØ± Ø®Ø§Ø±Ø¬ÛŒ Ø§Ø³Øª.
+## Privacy and limitations
 
-Ù…Ø¬ÙˆØ² Ù¾Ø±ÙˆÚ˜Ù‡ MIT Ø§Ø³Øª.
+The camera is activated only briefly for each sample. No image or video is stored or sent anywhere. The camera privacy LED may turn on during sampling. Brightness control works best with an internal laptop display; external monitors may not support `powercfg` brightness control.
+
+Licensed under the MIT License.
