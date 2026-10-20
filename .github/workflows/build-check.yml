@@ -1,0 +1,46 @@
+name: Windows build check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build executable
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\AdaptiveBrightnessWebcam.exe")) {
+            throw "Expected executable was not created."
+          }
+          $size = (Get-Item "dist\AdaptiveBrightnessWebcam.exe").Length
+          if ($size -lt 1MB) {
+            throw "Executable is unexpectedly small ($size bytes)."
+          }
+          Write-Host "Build artifact verified ($size bytes)."
