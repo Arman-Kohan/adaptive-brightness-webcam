@@ -1,85 +1,60 @@
 # Adaptive Brightness Webcam
 
-Windows 10/11 app that adjusts display brightness from short webcam light samples.
+A Windows 10/11 app that adjusts display brightness automatically using short webcam light samples.
 
-## Features
+یک برنامه برای ویندوز ۱۰ و ۱۱ که با نمونه‌برداری کوتاه از نور محیط توسط وب‌کم، روشنایی نمایشگر را به‌صورت خودکار تنظیم می‌کند.
 
-- Modern Windows 11-style desktop interface.
-- Automatic light and dark theme by time of day.
-- System tray controls.
-- Optional launch at Windows sign-in.
-- No camera images are saved or uploaded.
+## For regular users | برای کاربران عادی
 
-## Development
+### English
+
+1. Open the [Releases page](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases).
+2. Download `AdaptiveBrightnessWebcam-Windows.zip` or `AdaptiveBrightnessWebcam.exe`.
+3. If you downloaded the ZIP, extract it first.
+4. Double-click `AdaptiveBrightnessWebcam.exe`.
+5. Choose your camera and click **Test camera**, then click **Start automation**.
+
+No Python installation is required. The ZIP version is portable; it does not need an installer.
+
+### فارسی
+
+۱. وارد [صفحه Releases](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases) شوید.
+۲. فایل `AdaptiveBrightnessWebcam-Windows.zip` یا `AdaptiveBrightnessWebcam.exe` را دانلود کنید.
+۳. اگر فایل ZIP را دانلود کردید، ابتدا آن را Extract کنید.
+۴. روی فایل `AdaptiveBrightnessWebcam.exe` دوبار کلیک کنید.
+۵. دوربین را انتخاب کنید، روی **Test camera** و سپس روی **Start automation** کلیک کنید.
+
+برای اجرای برنامه نیازی به نصب Python نیست. نسخه ZIP قابل‌حمل است و به نصب‌کننده نیاز ندارد.
+
+## Features | امکانات
+
+- Modern Windows 11-style interface | رابط کاربری مدرن با سبک Windows 11
+- Automatic light and dark theme | حالت روشن و تاریک خودکار
+- System tray controls | کنترل از System Tray
+- Optional launch with Windows | اجرای اختیاری همراه با ورود به ویندوز
+- No images or videos are stored or uploaded | هیچ تصویر یا ویدئویی ذخیره یا آپلود نمی‌شود
+
+## Privacy and limitations | حریم خصوصی و محدودیت‌ها
+
+The webcam is active only briefly during each sample. The camera privacy light may turn on. Brightness control works best with an internal laptop display; some external monitors do not support it.
+
+وب‌کم فقط هنگام نمونه‌برداری و برای چند لحظه فعال می‌شود و ممکن است چراغ حریم خصوصی آن روشن شود. کنترل روشنایی روی نمایشگر داخلی لپ‌تاپ بهترین عملکرد را دارد و بعضی نمایشگرهای خارجی از آن پشتیبانی نمی‌کنند.
+
+## For developers | برای توسعه‌دهندگان
 
 ```powershell
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-## Build the Windows executable
+To build the Windows executable:
+
+برای ساخت فایل اجرایی ویندوز:
 
 ```powershell
 .\build.ps1
 ```
 
-The standalone executable is created at `dist\\AdaptiveBrightnessWebcam.exe`.
-The build includes CustomTkinter, Pillow, pystray, OpenCV, and a generated app icon.
-
-To create an installer, compile `installer.iss` with Inno Setup.
-
-## Privacy and limitations
-
-The camera is activated only briefly for each sample. No image or video is stored or sent anywhere. The camera privacy LED may turn on during sampling. Brightness control works best with an internal laptop display; external monitors may not support `powercfg` brightness control.
-
----
-
-# نسخه فارسی
-
-نرم‌افزار ویندوزی برای تنظیم خودکار روشنایی نمایشگر بر اساس نور محیط که با استفاده از نمونه‌برداری کوتاه از وب‌کم کار می‌کند.
-
-## امکانات
-
-- رابط کاربری مدرن با سبک Windows 11
-- حالت روشن و تاریک خودکار بر اساس ساعت روز
-- کنترل از طریق System Tray
-- امکان اجرای خودکار همراه با ورود به ویندوز
-- ذخیره یا آپلود نشدن تصاویر و ویدئوهای وب‌کم
-
-## اجرای نسخه توسعه‌ای
-
-ابتدا وابستگی‌ها را نصب کنید:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-سپس برنامه را اجرا کنید:
-
-```powershell
-python app.py
-```
-
-## ساخت فایل اجرایی ویندوز
-
-```powershell
-.\build.ps1
-```
-
-فایل اجرایی مستقل در مسیر زیر ساخته می‌شود:
-
-```
-dist\\AdaptiveBrightnessWebcam.exe
-```
-
-برای ساخت فایل نصب، فایل `installer.iss` را با Inno Setup کامپایل کنید.
-
-## حریم خصوصی و محدودیت‌ها
-
-وب‌کم فقط برای چند لحظه و هنگام نمونه‌برداری فعال می‌شود. هیچ تصویر یا ویدئویی ذخیره یا ارسال نمی‌شود. ممکن است چراغ حریم خصوصی وب‌کم هنگام نمونه‌برداری روشن شود.
-
-کنترل روشنایی روی نمایشگر داخلی لپ‌تاپ بهترین عملکرد را دارد؛ نمایشگرهای خارجی ممکن است از کنترل روشنایی با `powercfg` پشتیبانی نکنند.
-
-## مجوز
+The project is licensed under the MIT License.
 
 این پروژه تحت مجوز MIT منتشر شده است.
