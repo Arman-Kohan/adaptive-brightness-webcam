@@ -1,4 +1,4 @@
-"""Modern adaptive brightness webcam app with iOS-style Liquid Glass UI."""
+"""Modern adaptive brightness webcam app with unified night-sky UI."""
 from __future__ import annotations
 
 import ctypes
@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageTk
+    from PIL import Image, ImageDraw, ImageTk
 except ImportError as exc:
     raise SystemExit("Pillow is required: pip install pillow") from exc
 
@@ -29,27 +29,47 @@ APP_NAME = "Adaptive Brightness Webcam"
 AUTOSTART_FLAG = "--autostart"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
+
 # ------------------------------------------------------------
-# iOS-style theme tokens
+# Unified night-sky design tokens
 # ------------------------------------------------------------
-ACCENT = "#0A84FF"
-ACCENT_HOVER = "#0069D0"
-SUCCESS = "#30D158"
-WARNING = "#FF9F0A"
-DANGER = "#FF453A"
+ACCENT = ("#3E6DFF", "#5B8CFF")
+ACCENT_HOVER = ("#2F59D6", "#4978EA")
+ACCENT_TEXT = ("#2F59D6", "#9DB9FF")
 
-PAGE_BG = ("#F2F2F7", "#08080C")
-CARD_BG = ("#FFFFFF", "#1C1C1F")
-CARD_BORDER = ("#E6E6EB", "#2D2D33")
+SUCCESS = ("#17A56B", "#3DDC84")
+WARNING = ("#B36B00", "#FFC76B")
+DANGER = ("#D64545", "#FF6B6B")
 
-SUBTLE_BG = ("#F8F8FC", "#242429")
-SUBTLE_HOVER = ("#EDEDF2", "#2F2F36")
-FIELD_BG = ("#FFFFFF", "#2E2E35")
+# This is the key fix:
+# App background and card background are unified, so no extra
+# rectangle is visible behind rounded cards.
+APP_BG = ("#FFFFFF", "#0F1626")
+PAGE_BG = APP_BG
+CARD_BG = APP_BG
 
-TEXT_PRIMARY = ("#151518", "#F5F5F7")
-TEXT_SECONDARY = ("#7D7D84", "#9B9BA1")
+CARD_BORDER = ("#D8E1F6", "#273452")
 
-TRACK_OFF = ("#E4E4E9", "#3A3A3D")
+FIELD_BG = ("#F1F5FF", "#0B1222")
+FIELD_BORDER = ("#CBD8F4", "#2B3C63")
+
+TEXT_PRIMARY = ("#111A2C", "#F4F7FF")
+TEXT_SECONDARY = ("#5C6B8A", "#94A3C4")
+
+SEG_BG = FIELD_BG
+SEG_HOVER = ("#E4EBFF", "#141E38")
+
+TRACK_OFF = ("#D6E0F3", "#33415E")
+
+STOP_BG = ("#FDECEC", "#2A1520")
+STOP_HOVER = ("#FADADA", "#381D29")
+STOP_TEXT = ("#C53030", "#FF8A8A")
+STOP_BORDER = ("#F0B9B9", "#552430")
+
+OUTLINE_HOVER = ("#E9F0FF", "#18274A")
+
+SUBTLE_BG = FIELD_BG
+
 
 try:
     LANCZOS = Image.Resampling.LANCZOS
@@ -209,7 +229,7 @@ class BrightnessApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.geometry("980x700")
         self.minsize(860, 600)
-        self.configure(fg_color=PAGE_BG)
+        self.configure(fg_color=APP_BG)
 
         self.app_icon = create_app_icon(256)
         self._window_icon = ImageTk.PhotoImage(self.app_icon.resize((64, 64), LANCZOS))
@@ -264,116 +284,19 @@ class BrightnessApp(ctk.CTk):
         self.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 16)}")
 
     # ------------------------------------------------------------
-    # iOS Liquid Glass helpers
+    # UI helpers
     # ------------------------------------------------------------
-    def enable_ios_glass_background(self):
-        self._bg_label = ctk.CTkLabel(self, text="")
-        self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
-        self._bg_label.lower()
-
-        self._bg_job = None
-        self._bg_size = None
-
-        self.bind("<Configure>", self._on_window_configure, add="+")
-        self._refresh_glass_background()
-
-    def _on_window_configure(self, event=None):
-        self._schedule_glass_refresh()
-
-    def _schedule_glass_refresh(self):
+    def make_frame(self, parent, bg_color=APP_BG, **kwargs):
+        """
+        Create a CTkFrame with an explicit bg_color so the rectangular
+        canvas behind rounded corners matches the app surface.
+        """
         try:
-            if not self.winfo_exists():
-                return
-        except Exception:
-            return
+            return ctk.CTkFrame(parent, bg_color=bg_color, **kwargs)
+        except TypeError:
+            return ctk.CTkFrame(parent, **kwargs)
 
-        if getattr(self, "_bg_job", None):
-            try:
-                self.after_cancel(self._bg_job)
-            except Exception:
-                pass
-
-        self._bg_job = self.after(160, self._refresh_glass_background)
-
-    def _refresh_glass_background(self):
-        try:
-            if not self.winfo_exists() or not hasattr(self, "_bg_label"):
-                return
-        except Exception:
-            return
-
-        w = max(900, self.winfo_width())
-        h = max(640, self.winfo_height())
-        key = (w, h, self.current_theme)
-
-        if getattr(self, "_bg_size", None) == key:
-            return
-
-        self._bg_size = key
-        image = self.create_ios_wallpaper(w, h, self.current_theme)
-        self._bg_photo = ImageTk.PhotoImage(image)
-
-        self._bg_label.configure(image=self._bg_photo)
-        self._bg_label.lower()
-
-    def create_ios_wallpaper(self, width, height, theme):
-        width = max(320, int(width))
-        height = max(320, int(height))
-
-        # Render at a smaller size for performance, then upscale.
-        rw = min(width, 1600)
-        rh = min(height, 1200)
-
-        dark = theme == "dark"
-
-        top = (17, 19, 30) if dark else (247, 248, 252)
-        bottom = (5, 7, 12) if dark else (221, 226, 239)
-
-        base = Image.new("RGBA", (rw, rh), top + (255,))
-        draw = ImageDraw.Draw(base)
-
-        for y in range(rh):
-            t = y / max(1, rh - 1)
-            color = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
-            draw.line((0, y, rw, y), fill=color + (255,))
-
-        overlay = Image.new("RGBA", (rw, rh), (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-
-        if dark:
-            blobs = (
-                (-0.14, 0.00, 0.42, (38, 96, 240, 74)),
-                (0.92, -0.10, 0.34, (80, 200, 255, 50)),
-                (0.18, 1.02, 0.56, (110, 86, 240, 58)),
-                (1.08, 0.84, 0.34, (255, 69, 58, 36)),
-            )
-        else:
-            blobs = (
-                (-0.14, -0.04, 0.46, (10, 132, 255, 46)),
-                (0.96, -0.12, 0.38, (120, 210, 255, 42)),
-                (0.12, 1.08, 0.58, (175, 82, 222, 34)),
-                (1.10, 0.78, 0.32, (255, 159, 10, 24)),
-            )
-
-        for cx, cy, r, fill in blobs:
-            x0 = int((cx - r) * rw)
-            y0 = int((cy - r) * rh)
-            x1 = int((cx + r) * rw)
-            y1 = int((cy + r) * rh)
-            od.ellipse((x0, y0, x1, y1), fill=fill)
-
-        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=max(34, min(rw, rh) // 8)))
-        base.paste(overlay, (0, 0), overlay)
-
-        if (rw, rh) != (width, height):
-            base = base.resize((width, height), LANCZOS)
-
-        return base.convert("RGB")
-
-    # ------------------------------------------------------------
-    # iOS-style widgets
-    # ------------------------------------------------------------
-    def ios_button(self, parent, text, command=None, kind="primary", width=170, height=48, **kwargs):
+    def ui_button(self, parent, text, command=None, kind="primary", width=170, height=48, **kwargs):
         styles = {
             "primary": {
                 "fg_color": ACCENT,
@@ -381,23 +304,23 @@ class BrightnessApp(ctk.CTk):
                 "text_color": "#FFFFFF",
                 "border_width": 0,
             },
-            "secondary": {
-                "fg_color": SUBTLE_BG,
-                "hover_color": SUBTLE_HOVER,
-                "text_color": TEXT_PRIMARY,
+            "danger_soft": {
+                "fg_color": STOP_BG,
+                "hover_color": STOP_HOVER,
+                "text_color": STOP_TEXT,
                 "border_width": 1,
-                "border_color": CARD_BORDER,
+                "border_color": STOP_BORDER,
             },
             "outline": {
                 "fg_color": "transparent",
-                "hover_color": ("#EAF3FF", "#1D2735"),
-                "text_color": ACCENT,
-                "border_width": 2,
+                "hover_color": OUTLINE_HOVER,
+                "text_color": ACCENT_TEXT,
+                "border_width": 1,
                 "border_color": ACCENT,
             },
         }
 
-        style = styles.get(kind, styles["secondary"]).copy()
+        style = styles.get(kind, styles["primary"]).copy()
         style.update(kwargs)
 
         return ctk.CTkButton(
@@ -411,43 +334,51 @@ class BrightnessApp(ctk.CTk):
             **style,
         )
 
-    def ios_group(self, parent):
-        group = ctk.CTkFrame(
-            parent,
-            corner_radius=22,
-            fg_color=SUBTLE_BG,
-            border_width=1,
-            border_color=CARD_BORDER,
-        )
-        group.pack(fill="x", pady=(0, 14))
-
-        inner = ctk.CTkFrame(group, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=18, pady=16)
-        return inner
-
     def ios_section_title(self, parent, text):
         ctk.CTkLabel(
             parent,
             text=text.upper(),
             font=("Segoe UI", 9, "bold"),
             text_color=TEXT_SECONDARY,
-        ).pack(anchor="w", pady=(0, 10))
+        ).pack(anchor="w", pady=(0, 8))
 
     def ios_hint(self, parent, text):
         ctk.CTkLabel(
             parent,
             text=text,
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 9),
             text_color=TEXT_SECONDARY,
             wraplength=520,
             justify="left",
-        ).pack(anchor="w", pady=(8, 0))
+        ).pack(anchor="w", pady=(6, 0))
+
+    def ios_divider(self, parent):
+        self.make_frame(
+            parent,
+            bg_color=APP_BG,
+            height=1,
+            fg_color=CARD_BORDER,
+        ).pack(fill="x", pady=18)
+
+    def ios_row(self, parent, label=None):
+        row = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 8))
+
+        if label:
+            ctk.CTkLabel(
+                row,
+                text=label,
+                font=("Segoe UI", 11, "bold"),
+                text_color=TEXT_PRIMARY,
+            ).pack(side="left")
+
+        return row
 
     def ios_switch_row(self, parent, title, subtitle, variable, command=None):
-        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
         row.pack(fill="x", pady=(0, 12))
 
-        left = ctk.CTkFrame(row, fg_color="transparent")
+        left = self.make_frame(row, bg_color=APP_BG, fg_color="transparent")
         left.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(
@@ -461,80 +392,142 @@ class BrightnessApp(ctk.CTk):
             ctk.CTkLabel(
                 left,
                 text=subtitle,
-                font=("Segoe UI", 10),
+                font=("Segoe UI", 9),
                 text_color=TEXT_SECONDARY,
-            ).pack(anchor="w", pady=(3, 0))
+            ).pack(anchor="w", pady=(2, 0))
 
         ctk.CTkSwitch(
             row,
             text="",
             variable=variable,
             command=command,
-            width=56,
-            height=32,
-            corner_radius=18,
+            width=54,
+            height=30,
             progress_color=SUCCESS,
             fg_color=TRACK_OFF,
             button_color="#FFFFFF",
-            button_hover_color="#E9E9EE",
+            button_hover_color="#E8EEFF",
         ).pack(side="right", pady=(2, 0))
 
         return row
+
+    def ios_segmented(self, parent, values, variable, command=None, width=None, height=40):
+        frame = self.make_frame(
+            parent,
+            bg_color=APP_BG,
+            corner_radius=14,
+            fg_color=SEG_BG,
+            border_width=1,
+            border_color=CARD_BORDER,
+        )
+
+        if width is not None:
+            frame.configure(width=width, height=height + 6)
+            frame.pack_propagate(False)
+
+        frame.grid_rowconfigure(0, weight=1)
+        buttons = []
+
+        def select(value):
+            if variable.get() != value:
+                variable.set(value)
+
+            if callable(command):
+                command(value)
+
+            refresh()
+
+        def refresh(*_args):
+            current = variable.get()
+
+            for btn, value in buttons:
+                if value == current:
+                    btn.configure(
+                        fg_color=ACCENT,
+                        hover_color=ACCENT_HOVER,
+                        text_color="#FFFFFF",
+                    )
+                else:
+                    btn.configure(
+                        fg_color="transparent",
+                        hover_color=SEG_HOVER,
+                        text_color=TEXT_SECONDARY,
+                    )
+
+        for i, value in enumerate(values):
+            frame.grid_columnconfigure(i, weight=1)
+
+            btn = ctk.CTkButton(
+                frame,
+                text=value,
+                height=height - 6,
+                corner_radius=11,
+                fg_color="transparent",
+                hover_color=SEG_HOVER,
+                text_color=TEXT_SECONDARY,
+                font=("Segoe UI", 10, "bold"),
+                command=lambda v=value: select(v),
+            )
+            btn.grid(row=0, column=i, sticky="nsew", padx=3, pady=3)
+            buttons.append((btn, value))
+
+        try:
+            variable.trace_add("write", refresh)
+        except AttributeError:
+            try:
+                variable.trace("w", refresh)
+            except Exception:
+                pass
+
+        refresh()
+        return frame
 
     # ------------------------------------------------------------
     # UI
     # ------------------------------------------------------------
     def build_ui(self) -> None:
+        self.configure(fg_color=APP_BG)
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
         # Header
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=30, pady=(26, 14))
+        header = self.make_frame(self, bg_color=APP_BG, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=30, pady=(28, 14))
         header.grid_columnconfigure(1, weight=1)
 
-        self._header_icon = ctk.CTkImage(
+        header_icon = ctk.CTkImage(
             light_image=self.app_icon,
             dark_image=self.app_icon,
-            size=(58, 58),
+            size=(64, 64),
         )
-
-        icon_badge = ctk.CTkFrame(
-            header,
-            width=80,
-            height=80,
-            corner_radius=26,
-            fg_color=CARD_BG,
-            border_width=1,
-            border_color=CARD_BORDER,
-        )
-        icon_badge.grid(row=0, column=0, rowspan=2, padx=(0, 18))
-        icon_badge.grid_propagate(False)
+        self._header_icon = header_icon
 
         ctk.CTkLabel(
-            icon_badge,
-            image=self._header_icon,
+            header,
+            image=header_icon,
             text="",
-        ).place(relx=0.5, rely=0.5, anchor="center")
+        ).grid(row=0, column=0, rowspan=2, padx=(0, 18))
 
         ctk.CTkLabel(
             header,
             text="Adaptive Brightness",
-            font=("Segoe UI", 27, "bold"),
+            font=("Segoe UI", 28, "bold"),
             text_color=TEXT_PRIMARY,
         ).grid(row=0, column=1, sticky="w")
 
         ctk.CTkLabel(
             header,
-            text="Webcam ambient sensing with an iOS-style UI",
+            text="Night-sky ambient sensing, tuned for your display",
             font=("Segoe UI", 10),
             text_color=TEXT_SECONDARY,
         ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         # Status card
-        self.status_card = ctk.CTkFrame(
+        self.status_card = self.make_frame(
             self,
-            corner_radius=28,
+            bg_color=APP_BG,
+            corner_radius=26,
             border_width=1,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
@@ -546,44 +539,59 @@ class BrightnessApp(ctk.CTk):
         try:
             scroll = AutoHideScrollableFrame(
                 self,
-                fg_color="transparent",
+                fg_color=APP_BG,
+                corner_radius=0,
+                bg_color=APP_BG,
                 scrollbar_fg_color="transparent",
                 scrollbar_button_color=CARD_BORDER,
-                scrollbar_button_hover_color=(ACCENT, ACCENT),
+                scrollbar_button_hover_color=ACCENT,
             )
         except TypeError:
-            scroll = AutoHideScrollableFrame(self, fg_color="transparent")
+            try:
+                scroll = AutoHideScrollableFrame(
+                    self,
+                    fg_color=APP_BG,
+                    corner_radius=0,
+                )
+            except TypeError:
+                scroll = AutoHideScrollableFrame(self, fg_color=APP_BG)
 
-        scroll.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 0))
+        # No outer padding; padding goes inside.
+        scroll.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
 
-        content = ctk.CTkFrame(scroll, fg_color="transparent")
+        content = self.make_frame(scroll, bg_color=APP_BG, fg_color="transparent")
         content.pack(fill="both", expand=True)
-        content.grid_columnconfigure(0, weight=11)
-        content.grid_columnconfigure(1, weight=9)
 
-        settings = ctk.CTkFrame(
-            content,
-            corner_radius=28,
+        inner = self.make_frame(content, bg_color=APP_BG, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=30, pady=(8, 16))
+        inner.grid_columnconfigure(0, weight=11)
+        inner.grid_columnconfigure(1, weight=9)
+
+        settings = self.make_frame(
+            inner,
+            bg_color=APP_BG,
+            corner_radius=26,
             border_width=1,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
         )
-        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 14))
+        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=(0, 14))
 
-        stats = ctk.CTkFrame(
-            content,
-            corner_radius=28,
+        stats = self.make_frame(
+            inner,
+            bg_color=APP_BG,
+            corner_radius=26,
             border_width=1,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
         )
-        stats.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=(0, 14))
+        stats.grid(row=0, column=1, sticky="nsew", padx=(12, 0), pady=(0, 14))
 
         self.build_settings(settings)
         self.build_stats(stats)
 
         # Footer
-        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer = self.make_frame(self, bg_color=APP_BG, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=30, pady=(10, 26))
         footer.grid_columnconfigure(1, weight=1)
 
@@ -598,51 +606,46 @@ class BrightnessApp(ctk.CTk):
             footer,
             text="",
             font=("Segoe UI", 10, "bold"),
-            text_color=ACCENT,
+            text_color=ACCENT_TEXT,
         )
         self.toast.grid(row=0, column=1, sticky="w", padx=18)
 
-        self.test_btn = self.ios_button(
+        self.test_btn = self.ui_button(
             footer,
             "Test camera",
             self.test_once,
             kind="outline",
-            width=150,
+            width=160,
             height=46,
         )
         self.test_btn.grid(row=0, column=2, sticky="e")
-
-        # Liquid glass background
-        if not getattr(self, "_ios_bg_enabled", False):
-            self._ios_bg_enabled = True
-            self.enable_ios_glass_background()
 
         refresh = getattr(scroll, "_ah_refresh", None)
         if callable(refresh):
             self.after(180, refresh)
 
     def build_status(self, parent) -> None:
-        inner = ctk.CTkFrame(parent, fg_color="transparent")
-        inner.pack(fill="x", padx=26, pady=24)
+        inner = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
+        inner.pack(fill="x", padx=28, pady=26)
 
-        left = ctk.CTkFrame(inner, fg_color="transparent")
+        left = self.make_frame(inner, bg_color=APP_BG, fg_color="transparent")
         left.pack(side="left", fill="x", expand=True)
 
-        row = ctk.CTkFrame(left, fg_color="transparent")
+        row = self.make_frame(left, bg_color=APP_BG, fg_color="transparent")
         row.pack(anchor="w")
 
         self.status_dot = ctk.CTkLabel(
             row,
             text="●",
-            font=("Segoe UI", 16),
+            font=("Segoe UI", 18),
             text_color=TEXT_SECONDARY,
         )
-        self.status_dot.pack(side="left", padx=(0, 10))
+        self.status_dot.pack(side="left", padx=(0, 12))
 
         self.status_label = ctk.CTkLabel(
             row,
             text="Ready to start",
-            font=("Segoe UI", 17, "bold"),
+            font=("Segoe UI", 18, "bold"),
             text_color=TEXT_PRIMARY,
         )
         self.status_label.pack(side="left")
@@ -655,35 +658,35 @@ class BrightnessApp(ctk.CTk):
         )
         self.status_sub.pack(anchor="w", pady=(6, 0))
 
-        buttons = ctk.CTkFrame(inner, fg_color="transparent")
+        buttons = self.make_frame(inner, bg_color=APP_BG, fg_color="transparent")
         buttons.pack(side="right")
 
-        self.start_btn = self.ios_button(
+        self.start_btn = self.ui_button(
             buttons,
             "Start automation",
             self.start,
             kind="primary",
-            width=190,
-            height=48,
+            width=200,
+            height=50,
         )
-        self.start_btn.pack(side="left", padx=(0, 10))
+        self.start_btn.pack(side="left", padx=(0, 12))
 
-        self.stop_btn = self.ios_button(
+        self.stop_btn = self.ui_button(
             buttons,
             "Stop",
             self.stop,
-            kind="secondary",
-            width=105,
-            height=48,
+            kind="danger_soft",
+            width=110,
+            height=50,
+            state="disabled",
         )
-        self.stop_btn.configure(state="disabled")
         self.stop_btn.pack(side="left")
 
     def card_header(self, parent, title, subtitle):
         ctk.CTkLabel(
             parent,
             text=title,
-            font=("Segoe UI", 18, "bold"),
+            font=("Segoe UI", 19, "bold"),
             text_color=TEXT_PRIMARY,
         ).pack(anchor="w")
 
@@ -695,8 +698,8 @@ class BrightnessApp(ctk.CTk):
         ).pack(anchor="w", pady=(5, 0))
 
     def build_settings(self, parent) -> None:
-        body = ctk.CTkFrame(parent, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=24, pady=24)
+        body = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=26, pady=26)
 
         self.card_header(
             body,
@@ -704,125 +707,104 @@ class BrightnessApp(ctk.CTk):
             "Camera, interval, appearance, startup, and tray behavior.",
         )
 
+        container = self.make_frame(body, bg_color=APP_BG, fg_color="transparent")
+        container.pack(fill="both", expand=True, pady=(20, 0))
+
         # Camera
-        camera_group = self.ios_group(body)
-        self.ios_section_title(camera_group, "Camera")
+        self.ios_section_title(container, "Camera")
 
-        cam_row = ctk.CTkFrame(camera_group, fg_color="transparent")
-        cam_row.pack(fill="x")
-
-        ctk.CTkLabel(
-            cam_row,
-            text="Source",
-            font=("Segoe UI", 11, "bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(side="left")
-
-        ctk.CTkOptionMenu(
+        cam_row = self.ios_row(container, "Webcam source")
+        cam_menu = ctk.CTkOptionMenu(
             cam_row,
             values=[str(i) for i in range(6)],
             variable=self.camera_var,
-            width=110,
-            height=40,
+            width=130,
+            height=42,
             corner_radius=14,
             fg_color=FIELD_BG,
             button_color=ACCENT,
             button_hover_color=ACCENT_HOVER,
             text_color=TEXT_PRIMARY,
             font=("Segoe UI", 10),
-        ).pack(side="right")
+        )
+        cam_menu.pack(side="right")
+
+        try:
+            cam_menu.configure(
+                dropdown_fg_color=CARD_BG,
+                dropdown_button_color=ACCENT,
+                dropdown_button_hover_color=ACCENT_HOVER,
+                dropdown_text_color=TEXT_PRIMARY,
+            )
+        except Exception:
+            pass
 
         self.ios_hint(
-            camera_group,
+            container,
             "0 is usually the built-in webcam. The camera only wakes for a short sample.",
         )
 
+        self.ios_divider(container)
+
         # Interval
-        interval_group = self.ios_group(body)
-        self.ios_section_title(interval_group, "Check interval")
+        self.ios_section_title(container, "Check interval")
 
-        interval_row = ctk.CTkFrame(interval_group, fg_color="transparent")
-        interval_row.pack(fill="x")
-
-        ctk.CTkLabel(
-            interval_row,
-            text="Seconds",
-            font=("Segoe UI", 11, "bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(side="left")
-
+        interval_row = self.ios_row(container, "Seconds")
         ctk.CTkEntry(
             interval_row,
             textvariable=self.interval_var,
-            width=88,
+            width=92,
             height=42,
             corner_radius=14,
             fg_color=FIELD_BG,
-            border_color=CARD_BORDER,
+            border_color=FIELD_BORDER,
+            border_width=1,
             text_color=TEXT_PRIMARY,
             font=("Segoe UI", 12, "bold"),
             justify="center",
         ).pack(side="right")
 
-        ctk.CTkSegmentedButton(
-            interval_group,
-            values=["120", "300", "600"],
-            variable=self.preset_var,
+        preset_seg = self.ios_segmented(
+            container,
+            ["120", "300", "600"],
+            self.preset_var,
             command=lambda value: self.interval_var.set(value),
-            height=42,
-            corner_radius=14,
-            fg_color=FIELD_BG,
-            selected_color=ACCENT,
-            selected_hover_color=ACCENT_HOVER,
-            text_color=TEXT_PRIMARY,
-            font=("Segoe UI", 10, "bold"),
-        ).pack(fill="x", pady=(12, 0))
+        )
+        preset_seg.pack(fill="x", pady=(10, 0))
 
         self.ios_hint(
-            interval_group,
+            container,
             "Minimum 30 seconds. Battery mode automatically adds extra delay.",
         )
 
+        self.ios_divider(container)
+
         # Appearance
-        appearance_group = self.ios_group(body)
-        self.ios_section_title(appearance_group, "Appearance")
+        self.ios_section_title(container, "Appearance")
 
-        theme_row = ctk.CTkFrame(appearance_group, fg_color="transparent")
-        theme_row.pack(fill="x")
-
-        ctk.CTkLabel(
+        theme_row = self.ios_row(container, "App theme")
+        theme_seg = self.ios_segmented(
             theme_row,
-            text="App theme",
-            font=("Segoe UI", 11, "bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(side="left")
-
-        ctk.CTkSegmentedButton(
-            theme_row,
-            values=["Auto", "Windows"],
-            variable=self.theme_mode_var,
+            ["Auto", "Windows"],
+            self.theme_mode_var,
             command=self.on_theme_mode,
-            width=200,
+            width=230,
             height=40,
-            corner_radius=14,
-            fg_color=FIELD_BG,
-            selected_color=ACCENT,
-            selected_hover_color=ACCENT_HOVER,
-            text_color=TEXT_PRIMARY,
-            font=("Segoe UI", 10, "bold"),
-        ).pack(side="right")
+        )
+        theme_seg.pack(side="right")
 
         self.ios_hint(
-            appearance_group,
+            container,
             "Auto follows day/night. Windows follows the system theme.",
         )
 
+        self.ios_divider(container)
+
         # Behavior
-        behavior_group = self.ios_group(body)
-        self.ios_section_title(behavior_group, "Behavior")
+        self.ios_section_title(container, "Behavior")
 
         self.ios_switch_row(
-            behavior_group,
+            container,
             "Launch with Windows",
             "Start automatically when you sign in",
             self.startup_var,
@@ -830,20 +812,21 @@ class BrightnessApp(ctk.CTk):
         )
 
         self.ios_switch_row(
-            behavior_group,
+            container,
             "Close to tray",
             "Keep running quietly in the system tray",
             self.close_to_tray_var,
         )
 
-        note = ctk.CTkFrame(
+        note = self.make_frame(
             body,
-            corner_radius=18,
-            fg_color=SUBTLE_BG,
+            bg_color=APP_BG,
+            corner_radius=16,
+            fg_color=FIELD_BG,
             border_width=1,
-            border_color=CARD_BORDER,
+            border_color=FIELD_BORDER,
         )
-        note.pack(fill="x", side="bottom", pady=(4, 0))
+        note.pack(fill="x", side="bottom", pady=(18, 0))
 
         ctk.CTkLabel(
             note,
@@ -855,8 +838,8 @@ class BrightnessApp(ctk.CTk):
         ).pack(anchor="w", padx=16, pady=12)
 
     def build_stats(self, parent) -> None:
-        body = ctk.CTkFrame(parent, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=24, pady=24)
+        body = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=26, pady=26)
 
         self.card_header(
             body,
@@ -864,16 +847,16 @@ class BrightnessApp(ctk.CTk):
             "Latest light estimate and target brightness.",
         )
 
-        content = ctk.CTkFrame(body, fg_color="transparent")
-        content.pack(fill="both", expand=True, pady=(18, 0))
+        content = self.make_frame(body, bg_color=APP_BG, fg_color="transparent")
+        content.pack(fill="both", expand=True, pady=(20, 0))
 
-        self.metric_card(content, "AMBIENT LIGHT", self.last_value_var, "camera value")
-        target = self.metric_card(content, "TARGET BRIGHTNESS", self.last_target_var, "display level")
+        self.metric_card(content, "Ambient light", self.last_value_var, "camera value")
+        target = self.metric_card(content, "Target brightness", self.last_target_var, "display level")
 
         self.progress = ctk.CTkProgressBar(
             target,
-            height=12,
-            corner_radius=6,
+            height=10,
+            corner_radius=5,
             progress_color=ACCENT,
             fg_color=("#E7ECF6", "#2A3140"),
         )
@@ -897,14 +880,15 @@ class BrightnessApp(ctk.CTk):
             text_color=TEXT_PRIMARY,
         ).pack(side="right")
 
-        tip = ctk.CTkFrame(
+        tip = self.make_frame(
             body,
-            corner_radius=18,
-            fg_color=SUBTLE_BG,
+            bg_color=APP_BG,
+            corner_radius=16,
+            fg_color=FIELD_BG,
             border_width=1,
-            border_color=CARD_BORDER,
+            border_color=FIELD_BORDER,
         )
-        tip.pack(fill="x", side="bottom", pady=(10, 0))
+        tip.pack(fill="x", side="bottom", pady=(18, 0))
 
         ctk.CTkLabel(
             tip,
@@ -916,12 +900,13 @@ class BrightnessApp(ctk.CTk):
         ).pack(anchor="w", padx=16, pady=12)
 
     def metric_card(self, parent, title, variable, unit):
-        card = ctk.CTkFrame(
+        card = self.make_frame(
             parent,
-            corner_radius=22,
-            fg_color=SUBTLE_BG,
+            bg_color=APP_BG,
+            corner_radius=20,
+            fg_color=FIELD_BG,
             border_width=1,
-            border_color=CARD_BORDER,
+            border_color=FIELD_BORDER,
         )
         card.pack(fill="x", pady=(0, 12))
 
@@ -930,7 +915,7 @@ class BrightnessApp(ctk.CTk):
 
         ctk.CTkLabel(
             inner,
-            text=title,
+            text=title.upper(),
             font=("Segoe UI", 9, "bold"),
             text_color=TEXT_SECONDARY,
         ).pack(anchor="w")
@@ -955,13 +940,14 @@ class BrightnessApp(ctk.CTk):
         return inner
 
     def show_toast(self, message, mode="info"):
-        color = {
+        colors = {
             "success": SUCCESS,
             "error": DANGER,
             "warning": WARNING,
-        }.get(mode, ACCENT)
+            "info": ACCENT_TEXT,
+        }
 
-        self.toast.configure(text=message, text_color=color)
+        self.toast.configure(text=message, text_color=colors.get(mode, ACCENT_TEXT))
 
         if self.toast_job:
             try:
@@ -974,7 +960,7 @@ class BrightnessApp(ctk.CTk):
     def set_status(self, text, sub=None, mode="idle"):
         colors = {
             "running": SUCCESS,
-            "testing": ACCENT,
+            "testing": ACCENT_TEXT,
             "error": DANGER,
             "warning": WARNING,
             "success": SUCCESS,
@@ -986,6 +972,109 @@ class BrightnessApp(ctk.CTk):
 
         if sub is not None:
             self.status_sub.configure(text=sub)
+
+    # ------------------------------------------------------------
+    # Theme transition
+    # ------------------------------------------------------------
+    def _hex_to_rgb(self, value):
+        value = str(value).lstrip("#")
+        return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_hex(self, rgb):
+        r, g, b = [max(0, min(255, int(c))) for c in rgb]
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _mix_color(self, color_a, color_b, t):
+        rgb_a = self._hex_to_rgb(color_a)
+        rgb_b = self._hex_to_rgb(color_b)
+        mixed = tuple(rgb_a[i] + (rgb_b[i] - rgb_a[i]) * t for i in range(3))
+        return self._rgb_to_hex(mixed)
+
+    def _animate_theme(self, old_theme, new_theme, steps=8, interval=20):
+        if getattr(self, "_theme_anim_job", None):
+            try:
+                self.after_cancel(self._theme_anim_job)
+            except Exception:
+                pass
+
+        if getattr(self, "_theme_overlay", None):
+            try:
+                self._theme_overlay.destroy()
+            except Exception:
+                pass
+
+        old_color = APP_BG[1] if old_theme == "dark" else APP_BG[0]
+        new_color = APP_BG[1] if new_theme == "dark" else APP_BG[0]
+
+        overlay = ctk.CTkFrame(
+            self,
+            fg_color=old_color,
+            corner_radius=0,
+            border_width=0,
+        )
+
+        try:
+            overlay.configure(bg_color=old_color)
+        except Exception:
+            pass
+
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        overlay.lift()
+
+        self._theme_overlay = overlay
+        state = {"switched": False}
+
+        def step(i):
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+
+            t = i / max(1, steps)
+
+            try:
+                overlay.configure(fg_color=self._mix_color(old_color, new_color, t))
+            except Exception:
+                pass
+
+            # Switch the actual CustomTkinter theme near the middle of the fade.
+            if not state["switched"] and i >= steps // 2:
+                state["switched"] = True
+                try:
+                    ctk.set_appearance_mode(new_theme)
+                    self.configure(fg_color=APP_BG)
+                except Exception:
+                    pass
+
+            if i >= steps:
+                try:
+                    overlay.destroy()
+                except Exception:
+                    pass
+
+                self._theme_overlay = None
+                self._theme_anim_job = None
+                return
+
+            self._theme_anim_job = self.after(interval, lambda: step(i + 1))
+
+        step(0)
+
+    def apply_theme(self) -> None:
+        theme = self.detect_theme()
+
+        if theme == self.current_theme:
+            return
+
+        old_theme = self.current_theme
+        self.current_theme = theme
+
+        self._animate_theme(old_theme, theme)
+
+    def theme_tick(self) -> None:
+        self.apply_theme()
+        self.after(8000, self.theme_tick)
 
     # ------------------------------------------------------------
     # App logic
@@ -1166,19 +1255,6 @@ class BrightnessApp(ctk.CTk):
         if self.theme_mode_var.get() == "Auto":
             return get_auto_theme()
         return get_windows_theme()
-
-    def apply_theme(self) -> None:
-        theme = self.detect_theme()
-
-        if theme != self.current_theme:
-            self.current_theme = theme
-            ctk.set_appearance_mode(theme)
-            self.configure(fg_color=PAGE_BG)
-            self._refresh_glass_background()
-
-    def theme_tick(self) -> None:
-        self.apply_theme()
-        self.after(8000, self.theme_tick)
 
     # ------------------------------------------------------------
     # Startup / tray
