@@ -1,8 +1,9 @@
-"""Modern adaptive brightness webcam app with unified night-sky UI."""
+"""Modern adaptive brightness webcam app with iOS 27-style UI."""
 from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import queue
 import sys
 import tempfile
@@ -24,57 +25,52 @@ except ImportError:
 import customtkinter as ctk
 import adaptive_brightness as engine
 
-
 APP_NAME = "Adaptive Brightness Webcam"
 AUTOSTART_FLAG = "--autostart"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
-
 # ------------------------------------------------------------
-# Unified night-sky design tokens
+# iOS 27-style design tokens
 # ------------------------------------------------------------
-ACCENT = ("#3E6DFF", "#5B8CFF")
-ACCENT_HOVER = ("#2F59D6", "#4978EA")
-ACCENT_TEXT = ("#2F59D6", "#9DB9FF")
+ACCENT = ("#0A6CFF", "#5B8CFF")
+ACCENT_HOVER = ("#0859DB", "#4978EA")
+ACCENT_TEXT = ("#0859DB", "#9DB9FF")
 
-SUCCESS = ("#17A56B", "#3DDC84")
+SUCCESS = ("#188A55", "#3DDC84")
 WARNING = ("#B36B00", "#FFC76B")
-DANGER = ("#D64545", "#FF6B6B")
 
-# This is the key fix:
-# App background and card background are unified, so no extra
-# rectangle is visible behind rounded cards.
-APP_BG = ("#FFFFFF", "#0F1626")
+DANGER = ("#E24C4B", "#FF6961")
+DANGER_HOVER = ("#C43D3C", "#E85C58")
+
+APP_BG = ("#F6F8FE", "#0A111F")
 PAGE_BG = APP_BG
 CARD_BG = APP_BG
 
-CARD_BORDER = ("#D8E1F6", "#273452")
+CARD_BORDER = ("#D8E2F5", "#243250")
+FIELD_BG = ("#EDF2FB", "#0B1322")
+FIELD_BORDER = ("#C9D6EF", "#2B3C63")
 
-FIELD_BG = ("#F1F5FF", "#0B1222")
-FIELD_BORDER = ("#CBD8F4", "#2B3C63")
-
-TEXT_PRIMARY = ("#111A2C", "#F4F7FF")
-TEXT_SECONDARY = ("#5C6B8A", "#94A3C4")
+TEXT_PRIMARY = ("#0F1828", "#F4F7FF")
+TEXT_SECONDARY = ("#5B6B8A", "#93A3C6")
 
 SEG_BG = FIELD_BG
-SEG_HOVER = ("#E4EBFF", "#141E38")
+SEG_HOVER = ("#E5EDFF", "#182541")
 
-TRACK_OFF = ("#D6E0F3", "#33415E")
+TRACK_OFF = ("#A9B7D2", "#33415E")
 
-STOP_BG = ("#FDECEC", "#2A1520")
-STOP_HOVER = ("#FADADA", "#381D29")
-STOP_TEXT = ("#C53030", "#FF8A8A")
-STOP_BORDER = ("#F0B9B9", "#552430")
+DISABLED_BG = ("#E6EAF3", "#1B2438")
+DISABLED_TEXT = ("#9AA7BF", "#5F6C88")
+DISABLED_BORDER = ("#D3DBEA", "#2B3854")
 
 OUTLINE_HOVER = ("#E9F0FF", "#18274A")
-
 SUBTLE_BG = FIELD_BG
-
 
 try:
     LANCZOS = Image.Resampling.LANCZOS
 except AttributeError:
     LANCZOS = Image.LANCZOS
+
+_ICON_MASTER = None
 
 
 def get_auto_theme() -> str:
@@ -92,53 +88,159 @@ def get_windows_theme() -> str:
         return get_auto_theme()
 
 
-def create_app_icon(size: int = 256) -> Image.Image:
-    size = max(16, int(size))
-    icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(icon)
-    radius = int(size * 0.23)
+def enable_windows_enhancements() -> None:
+    """Improve Windows taskbar behavior and DPI rendering."""
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
-    draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=(25, 35, 73, 255))
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_NAME)
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------
+# High-quality app icon
+# ------------------------------------------------------------
+def _lerp_color(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _build_icon_master(size: int = 1024) -> Image.Image:
+    """
+    Build a clean, high-contrast master icon.
+
+    Design choices for taskbar sharpness:
+    - larger ring
+    - larger moon
+    - no tiny stars
+    - strong dark lens behind ring/moon
+    """
+    size = max(256, int(size))
+
+    gradient = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(gradient)
+
+    top = (24, 62, 168)
+    mid = (13, 29, 86)
+    bottom = (6, 11, 34)
 
     for y in range(size):
-        color = (
-            35 - int(y * 20 / size),
-            48 - int(y * 30 / size),
-            96 - int(y * 65 / size),
-            255,
-        )
-        draw.line((0, y, size, y), fill=color)
+        t = y / max(1, size - 1)
 
+        if t < 0.55:
+            color = _lerp_color(top, mid, t / 0.55)
+        else:
+            color = _lerp_color(mid, bottom, (t - 0.55) / 0.45)
+
+        draw.line((0, y, size - 1, y), fill=color + (255,))
+
+    mask = Image.new("L", (size, size), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    radius = int(size * 0.223)
+
+    try:
+        mask_draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
+    except AttributeError:
+        mask_draw.rectangle((0, 0, size - 1, size - 1), fill=255)
+
+    icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    icon.paste(gradient, (0, 0), mask)
+
+    draw = ImageDraw.Draw(icon)
+
+    # Dark lens for contrast.
+    lens_inset = int(size * 0.145)
     draw.ellipse(
-        (int(size * 0.16), int(size * 0.16), int(size * 0.84), int(size * 0.84)),
-        outline=(137, 204, 255, 255),
-        width=max(2, int(size * 0.042)),
+        (lens_inset, lens_inset, size - lens_inset, size - lens_inset),
+        fill=(7, 13, 34, 255),
     )
 
-    moon = Image.new("L", (size, size), 0)
-    md = ImageDraw.Draw(moon)
-    md.ellipse((int(size * 0.33), int(size * 0.33), int(size * 0.67), int(size * 0.67)), fill=255)
-    md.ellipse((int(size * 0.45), int(size * 0.25), int(size * 0.79), int(size * 0.59)), fill=0)
+    # Bright ring.
+    ring_inset = int(size * 0.155)
+    draw.ellipse(
+        (ring_inset, ring_inset, size - ring_inset, size - ring_inset),
+        outline=(150, 210, 255, 255),
+        width=max(3, int(size * 0.055)),
+    )
 
-    layer = Image.new("RGBA", (size, size), (255, 206, 112, 255))
-    icon.paste(layer, (0, 0), moon)
+    # Crescent moon.
+    moon_mask = Image.new("L", (size, size), 0)
+    md = ImageDraw.Draw(moon_mask)
 
-    for x, y, r in ((0.30, 0.28, 0.016), (0.73, 0.29, 0.013), (0.76, 0.63, 0.015), (0.27, 0.69, 0.012)):
-        cx = int(x * size)
-        cy = int(y * size)
-        rad = max(1, int(r * size))
-        draw.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=(224, 236, 255, 210))
+    md.ellipse(
+        (
+            int(size * 0.32),
+            int(size * 0.32),
+            int(size * 0.70),
+            int(size * 0.70),
+        ),
+        fill=255,
+    )
+
+    md.ellipse(
+        (
+            int(size * 0.47),
+            int(size * 0.22),
+            int(size * 0.86),
+            int(size * 0.60),
+        ),
+        fill=0,
+    )
+
+    moon_layer = Image.new("RGBA", (size, size), (255, 205, 105, 255))
+    icon.paste(moon_layer, (0, 0), moon_mask)
+
+    # Small highlight dot.
+    draw = ImageDraw.Draw(icon)
+    draw.ellipse(
+        (
+            int(size * 0.255),
+            int(size * 0.245),
+            int(size * 0.295),
+            int(size * 0.285),
+        ),
+        fill=(215, 238, 255, 205),
+    )
 
     return icon
 
 
+def _get_icon_master(size: int = 1024) -> Image.Image:
+    global _ICON_MASTER
+    if _ICON_MASTER is None:
+        _ICON_MASTER = _build_icon_master(size)
+    return _ICON_MASTER
+
+
+def create_app_icon(size: int = 256) -> Image.Image:
+    size = max(16, int(size))
+    return _get_icon_master(1024).resize((size, size), LANCZOS)
+
+
 def save_app_icon() -> Path | None:
     try:
-        path = Path(tempfile.gettempdir()) / "adaptive_brightness_webcam.ico"
-        create_app_icon(256).save(
+        path = Path(tempfile.gettempdir()) / f"adaptive_brightness_webcam_{os.getpid()}.ico"
+        _get_icon_master(1024).save(
             path,
             format="ICO",
-            sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+            sizes=[
+                (16, 16),
+                (20, 20),
+                (24, 24),
+                (32, 32),
+                (40, 40),
+                (48, 48),
+                (64, 64),
+                (96, 96),
+                (128, 128),
+                (256, 256),
+            ],
         )
         return path
     except Exception:
@@ -146,12 +248,11 @@ def save_app_icon() -> Path | None:
 
 
 class AutoHideScrollableFrame(ctk.CTkScrollableFrame):
-    """
-    CTkScrollableFrame that hides the scrollbar when content fits.
-    """
+    """CTkScrollableFrame that hides the scrollbar when content fits."""
 
     def __init__(self, master=None, **kwargs):
         super().__init__(master, **kwargs)
+
         self._ah_ready = False
         self._ah_canvas = getattr(self, "_parent_canvas", None)
         self._ah_scrollbar = getattr(self, "_scrollbar", None)
@@ -231,35 +332,38 @@ class BrightnessApp(ctk.CTk):
         self.minsize(860, 600)
         self.configure(fg_color=APP_BG)
 
-        self.app_icon = create_app_icon(256)
-        self._window_icon = ImageTk.PhotoImage(self.app_icon.resize((64, 64), LANCZOS))
-        self.iconphoto(True, self._window_icon)
+        # Icons
+        self.app_icon = create_app_icon(512)
+        self._icon_path = save_app_icon()
+        self._icon_fallback_images = []
+        self._apply_window_icon()
 
-        icon_path = save_app_icon()
-        if icon_path:
-            try:
-                self.iconbitmap(str(icon_path))
-            except Exception:
-                pass
-
-        self.worker_thread: threading.Thread | None = None
+        # App state
+        self.worker_thread = None
         self.stop_event = threading.Event()
         self.camera_lock = threading.Lock()
         self.brightness_lock = threading.Lock()
         self.events: queue.Queue = queue.Queue()
+
         self.worker_generation = 0
         self.testing = False
         self.is_running = False
+
         self.tray_icon = None
         self.tray_thread = None
+        self.tray_toggle_item = None
         self.toast_job = None
 
+        self.camera_chips = []
+
+        # Settings variables
         self.camera_var = ctk.StringVar(value="0")
         self.interval_var = ctk.StringVar(value="120")
         self.preset_var = ctk.StringVar(value="120")
         self.startup_var = ctk.BooleanVar(value=self.startup_enabled())
         self.close_to_tray_var = ctk.BooleanVar(value=True)
 
+        # Stats variables
         self.last_value_var = ctk.StringVar(value="-")
         self.last_target_var = ctk.StringVar(value="-")
         self.last_update_var = ctk.StringVar(value="-")
@@ -271,30 +375,89 @@ class BrightnessApp(ctk.CTk):
         self.after(500, self.apply_theme)
         self.after(8000, self.theme_tick)
 
+        # Some Windows taskbars only pick the icon reliably after mapping.
+        self.after(250, self._apply_window_icon)
+        self.after(1200, self._apply_window_icon)
+
         self.start_tray()
         self.ensure_startup_command()
 
     def center_window(self) -> None:
         self.update_idletasks()
-
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         w = min(1120, max(860, int(sw * 0.76), sw - 24))
         h = min(820, max(600, int(sh * 0.82), sh - 90))
-
         self.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 16)}")
 
+    def _apply_window_icon(self) -> None:
+        icon_ok = False
+
+        if getattr(self, "_icon_path", None):
+            try:
+                self.update_idletasks()
+                self.iconbitmap(str(self._icon_path))
+                icon_ok = True
+            except Exception:
+                icon_ok = False
+
+            try:
+                self.iconbitmap(bitmap=str(self._icon_path), default=True)
+            except Exception:
+                pass
+
+        if not icon_ok:
+            if not self._icon_fallback_images:
+                for size in (16, 24, 32, 48, 64, 128, 256):
+                    try:
+                        self._icon_fallback_images.append(
+                            ImageTk.PhotoImage(create_app_icon(size))
+                        )
+                    except Exception:
+                        pass
+
+            if self._icon_fallback_images:
+                try:
+                    self.iconphoto(True, *self._icon_fallback_images)
+                except Exception:
+                    pass
+
     # ------------------------------------------------------------
-    # UI helpers
+    # Safe widget helpers
     # ------------------------------------------------------------
+    def _trace(self, variable, callback):
+        try:
+            variable.trace_add("write", callback)
+        except AttributeError:
+            try:
+                variable.trace("w", callback)
+            except Exception:
+                pass
+
     def make_frame(self, parent, bg_color=APP_BG, **kwargs):
-        """
-        Create a CTkFrame with an explicit bg_color so the rectangular
-        canvas behind rounded corners matches the app surface.
-        """
+        """Create a CTkFrame with explicit bg_color for clean rounded corners."""
         try:
             return ctk.CTkFrame(parent, bg_color=bg_color, **kwargs)
         except TypeError:
             return ctk.CTkFrame(parent, **kwargs)
+
+    def _make_ctk_button(self, parent, **kwargs):
+        try:
+            return ctk.CTkButton(parent, **kwargs)
+        except TypeError:
+            for key in ("text_color_disabled", "border_color", "corner_radius"):
+                kwargs.pop(key, None)
+            return ctk.CTkButton(parent, **kwargs)
+
+    def _safe_configure(self, widget, **kwargs):
+        try:
+            widget.configure(**kwargs)
+        except Exception:
+            for key in ("text_color_disabled", "border_color", "corner_radius"):
+                kwargs.pop(key, None)
+            try:
+                widget.configure(**kwargs)
+            except Exception:
+                pass
 
     def ui_button(self, parent, text, command=None, kind="primary", width=170, height=48, **kwargs):
         styles = {
@@ -303,13 +466,14 @@ class BrightnessApp(ctk.CTk):
                 "hover_color": ACCENT_HOVER,
                 "text_color": "#FFFFFF",
                 "border_width": 0,
+                "text_color_disabled": "#FFFFFF",
             },
-            "danger_soft": {
-                "fg_color": STOP_BG,
-                "hover_color": STOP_HOVER,
-                "text_color": STOP_TEXT,
-                "border_width": 1,
-                "border_color": STOP_BORDER,
+            "danger_filled": {
+                "fg_color": DANGER,
+                "hover_color": DANGER_HOVER,
+                "text_color": "#FFFFFF",
+                "border_width": 0,
+                "text_color_disabled": "#FFFFFF",
             },
             "outline": {
                 "fg_color": "transparent",
@@ -317,22 +481,52 @@ class BrightnessApp(ctk.CTk):
                 "text_color": ACCENT_TEXT,
                 "border_width": 1,
                 "border_color": ACCENT,
+                "text_color_disabled": ACCENT_TEXT,
             },
         }
 
         style = styles.get(kind, styles["primary"]).copy()
         style.update(kwargs)
 
-        return ctk.CTkButton(
-            parent,
+        base = dict(
             text=text,
             command=command,
             width=width,
             height=height,
-            corner_radius=16,
+            corner_radius=20,
             font=("Segoe UI", 11, "bold"),
-            **style,
         )
+        base.update(style)
+
+        return self._make_ctk_button(parent, **base)
+
+    def make_switch(self, parent, variable, command=None):
+        base = dict(
+            text="",
+            variable=variable,
+            command=command,
+            width=54,
+            height=30,
+            corner_radius=17,
+            progress_color=SUCCESS,
+            fg_color=TRACK_OFF,
+            button_color=("#FFFFFF", "#F5F8FF"),
+            button_hover_color=("#E8EEFF", "#DCE6FF"),
+        )
+
+        try:
+            return ctk.CTkSwitch(
+                parent,
+                border_width=1,
+                border_color=("#98A9CB", "#46587F"),
+                **base,
+            )
+        except TypeError:
+            try:
+                return ctk.CTkSwitch(parent, **base)
+            except TypeError:
+                base.pop("corner_radius", None)
+                return ctk.CTkSwitch(parent, **base)
 
     def ios_section_title(self, parent, text):
         ctk.CTkLabel(
@@ -396,19 +590,7 @@ class BrightnessApp(ctk.CTk):
                 text_color=TEXT_SECONDARY,
             ).pack(anchor="w", pady=(2, 0))
 
-        ctk.CTkSwitch(
-            row,
-            text="",
-            variable=variable,
-            command=command,
-            width=54,
-            height=30,
-            progress_color=SUCCESS,
-            fg_color=TRACK_OFF,
-            button_color="#FFFFFF",
-            button_hover_color="#E8EEFF",
-        ).pack(side="right", pady=(2, 0))
-
+        self.make_switch(row, variable, command).pack(side="right", pady=(2, 0))
         return row
 
     def ios_segmented(self, parent, values, variable, command=None, width=None, height=40):
@@ -431,15 +613,12 @@ class BrightnessApp(ctk.CTk):
         def select(value):
             if variable.get() != value:
                 variable.set(value)
-
             if callable(command):
                 command(value)
-
             refresh()
 
         def refresh(*_args):
             current = variable.get()
-
             for btn, value in buttons:
                 if value == current:
                     btn.configure(
@@ -456,8 +635,7 @@ class BrightnessApp(ctk.CTk):
 
         for i, value in enumerate(values):
             frame.grid_columnconfigure(i, weight=1)
-
-            btn = ctk.CTkButton(
+            btn = self._make_ctk_button(
                 frame,
                 text=value,
                 height=height - 6,
@@ -471,23 +649,15 @@ class BrightnessApp(ctk.CTk):
             btn.grid(row=0, column=i, sticky="nsew", padx=3, pady=3)
             buttons.append((btn, value))
 
-        try:
-            variable.trace_add("write", refresh)
-        except AttributeError:
-            try:
-                variable.trace("w", refresh)
-            except Exception:
-                pass
-
+        self._trace(variable, refresh)
         refresh()
         return frame
 
     # ------------------------------------------------------------
-    # UI
+    # UI construction
     # ------------------------------------------------------------
     def build_ui(self) -> None:
         self.configure(fg_color=APP_BG)
-
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
@@ -527,7 +697,7 @@ class BrightnessApp(ctk.CTk):
         self.status_card = self.make_frame(
             self,
             bg_color=APP_BG,
-            corner_radius=26,
+            corner_radius=30,
             border_width=1,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
@@ -552,11 +722,11 @@ class BrightnessApp(ctk.CTk):
                     self,
                     fg_color=APP_BG,
                     corner_radius=0,
+                    bg_color=APP_BG,
                 )
             except TypeError:
                 scroll = AutoHideScrollableFrame(self, fg_color=APP_BG)
 
-        # No outer padding; padding goes inside.
         scroll.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
 
         content = self.make_frame(scroll, bg_color=APP_BG, fg_color="transparent")
@@ -564,13 +734,15 @@ class BrightnessApp(ctk.CTk):
 
         inner = self.make_frame(content, bg_color=APP_BG, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=30, pady=(8, 16))
+
         inner.grid_columnconfigure(0, weight=11)
         inner.grid_columnconfigure(1, weight=9)
+        inner.grid_rowconfigure(0, weight=1)
 
         settings = self.make_frame(
             inner,
             bg_color=APP_BG,
-            corner_radius=26,
+            corner_radius=30,
             border_width=1,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
@@ -580,7 +752,7 @@ class BrightnessApp(ctk.CTk):
         stats = self.make_frame(
             inner,
             bg_color=APP_BG,
-            corner_radius=26,
+            corner_radius=30,
             border_width=1,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
@@ -666,8 +838,8 @@ class BrightnessApp(ctk.CTk):
             "Start automation",
             self.start,
             kind="primary",
-            width=200,
-            height=50,
+            width=210,
+            height=52,
         )
         self.start_btn.pack(side="left", padx=(0, 12))
 
@@ -675,12 +847,68 @@ class BrightnessApp(ctk.CTk):
             buttons,
             "Stop",
             self.stop,
-            kind="danger_soft",
-            width=110,
-            height=50,
+            kind="danger_filled",
+            width=115,
+            height=52,
             state="disabled",
         )
         self.stop_btn.pack(side="left")
+
+        self.refresh_run_controls()
+
+    def refresh_run_controls(self):
+        """Make enabled/disabled state of Start and Stop visually obvious."""
+        if not hasattr(self, "start_btn") or not hasattr(self, "stop_btn"):
+            return
+
+        if self.is_running:
+            # Start becomes disabled gray.
+            self._safe_configure(
+                self.start_btn,
+                state="disabled",
+                fg_color=DISABLED_BG,
+                hover_color=DISABLED_BG,
+                text_color=DISABLED_TEXT,
+                text_color_disabled=DISABLED_TEXT,
+                border_width=1,
+                border_color=DISABLED_BORDER,
+            )
+
+            # Stop becomes active red.
+            self._safe_configure(
+                self.stop_btn,
+                state="normal",
+                fg_color=DANGER,
+                hover_color=DANGER_HOVER,
+                text_color="#FFFFFF",
+                text_color_disabled="#FFFFFF",
+                border_width=0,
+                border_color=DANGER,
+            )
+        else:
+            # Start becomes active blue.
+            self._safe_configure(
+                self.start_btn,
+                state="normal",
+                fg_color=ACCENT,
+                hover_color=ACCENT_HOVER,
+                text_color="#FFFFFF",
+                text_color_disabled="#FFFFFF",
+                border_width=0,
+                border_color=ACCENT,
+            )
+
+            # Stop becomes disabled gray.
+            self._safe_configure(
+                self.stop_btn,
+                state="disabled",
+                fg_color=DISABLED_BG,
+                hover_color=DISABLED_BG,
+                text_color=DISABLED_TEXT,
+                text_color_disabled=DISABLED_TEXT,
+                border_width=1,
+                border_color=DISABLED_BORDER,
+            )
 
     def card_header(self, parent, title, subtitle):
         ctk.CTkLabel(
@@ -714,42 +942,29 @@ class BrightnessApp(ctk.CTk):
         self.ios_section_title(container, "Camera")
 
         cam_row = self.ios_row(container, "Webcam source")
-        cam_menu = ctk.CTkOptionMenu(
-            cam_row,
-            values=[str(i) for i in range(6)],
-            variable=self.camera_var,
-            width=130,
-            height=42,
-            corner_radius=14,
-            fg_color=FIELD_BG,
-            button_color=ACCENT,
-            button_hover_color=ACCENT_HOVER,
-            text_color=TEXT_PRIMARY,
-            font=("Segoe UI", 10),
-        )
-        cam_menu.pack(side="right")
 
-        try:
-            cam_menu.configure(
-                dropdown_fg_color=CARD_BG,
-                dropdown_button_color=ACCENT,
-                dropdown_button_hover_color=ACCENT_HOVER,
-                dropdown_text_color=TEXT_PRIMARY,
-            )
-        except Exception:
-            pass
+        self.camera_value_label = ctk.CTkLabel(
+            cam_row,
+            text=f"Camera {self.camera_var.get()}",
+            font=("Segoe UI", 10, "bold"),
+            text_color=ACCENT_TEXT,
+        )
+        self.camera_value_label.pack(side="right")
+
+        self._trace(self.camera_var, self._update_camera_badge)
+
+        self.build_camera_chips(container)
 
         self.ios_hint(
             container,
             "0 is usually the built-in webcam. The camera only wakes for a short sample.",
         )
-
         self.ios_divider(container)
 
         # Interval
         self.ios_section_title(container, "Check interval")
-
         interval_row = self.ios_row(container, "Seconds")
+
         ctk.CTkEntry(
             interval_row,
             textvariable=self.interval_var,
@@ -772,17 +987,23 @@ class BrightnessApp(ctk.CTk):
         )
         preset_seg.pack(fill="x", pady=(10, 0))
 
+        def _sync_preset(*_args):
+            value = self.interval_var.get().strip()
+            if value in ("120", "300", "600") and self.preset_var.get() != value:
+                self.preset_var.set(value)
+
+        self._trace(self.interval_var, _sync_preset)
+
         self.ios_hint(
             container,
             "Minimum 30 seconds. Battery mode automatically adds extra delay.",
         )
-
         self.ios_divider(container)
 
         # Appearance
         self.ios_section_title(container, "Appearance")
-
         theme_row = self.ios_row(container, "App theme")
+
         theme_seg = self.ios_segmented(
             theme_row,
             ["Auto", "Windows"],
@@ -797,7 +1018,6 @@ class BrightnessApp(ctk.CTk):
             container,
             "Auto follows day/night. Windows follows the system theme.",
         )
-
         self.ios_divider(container)
 
         # Behavior
@@ -837,6 +1057,65 @@ class BrightnessApp(ctk.CTk):
             justify="left",
         ).pack(anchor="w", padx=16, pady=12)
 
+    def _update_camera_badge(self, *_args):
+        try:
+            self.camera_value_label.configure(text=f"Camera {self.camera_var.get()}")
+        except Exception:
+            pass
+
+    def build_camera_chips(self, parent):
+        """iOS-like selectable camera grid instead of a dropdown."""
+        grid = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
+        grid.pack(fill="x", pady=(10, 0))
+
+        for col in range(3):
+            grid.grid_columnconfigure(col, weight=1)
+
+        self.camera_chips = []
+
+        for index in range(6):
+            row, col = divmod(index, 3)
+
+            chip = self._make_ctk_button(
+                grid,
+                text=f"Camera {index}",
+                height=50,
+                corner_radius=16,
+                font=("Segoe UI", 10, "bold"),
+                command=lambda i=index: self.camera_var.set(str(i)),
+            )
+            chip.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
+
+            self.camera_chips.append((chip, str(index)))
+
+        def refresh(*_args):
+            current = self.camera_var.get()
+
+            for chip, value in self.camera_chips:
+                selected = value == current
+
+                if selected:
+                    chip.configure(
+                        fg_color=ACCENT,
+                        hover_color=ACCENT_HOVER,
+                        text_color="#FFFFFF",
+                        border_width=0,
+                        border_color=ACCENT,
+                        text_color_disabled="#FFFFFF",
+                    )
+                else:
+                    chip.configure(
+                        fg_color=FIELD_BG,
+                        hover_color=SEG_HOVER,
+                        text_color=TEXT_PRIMARY,
+                        border_width=1,
+                        border_color=FIELD_BORDER,
+                        text_color_disabled=TEXT_PRIMARY,
+                    )
+
+        self._trace(self.camera_var, refresh)
+        refresh()
+
     def build_stats(self, parent) -> None:
         body = self.make_frame(parent, bg_color=APP_BG, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=26, pady=26)
@@ -863,7 +1142,7 @@ class BrightnessApp(ctk.CTk):
         self.progress.pack(fill="x", pady=(14, 0))
         self.progress.set(0)
 
-        meta = ctk.CTkFrame(target, fg_color="transparent")
+        meta = self.make_frame(target, bg_color=FIELD_BG, fg_color="transparent")
         meta.pack(fill="x", pady=(12, 0))
 
         ctk.CTkLabel(
@@ -910,7 +1189,7 @@ class BrightnessApp(ctk.CTk):
         )
         card.pack(fill="x", pady=(0, 12))
 
-        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner = self.make_frame(card, bg_color=FIELD_BG, fg_color="transparent")
         inner.pack(fill="x", padx=20, pady=18)
 
         ctk.CTkLabel(
@@ -920,7 +1199,7 @@ class BrightnessApp(ctk.CTk):
             text_color=TEXT_SECONDARY,
         ).pack(anchor="w")
 
-        row = ctk.CTkFrame(inner, fg_color="transparent")
+        row = self.make_frame(inner, bg_color=FIELD_BG, fg_color="transparent")
         row.pack(fill="x", pady=(8, 0))
 
         ctk.CTkLabel(
@@ -1020,8 +1299,8 @@ class BrightnessApp(ctk.CTk):
 
         overlay.place(x=0, y=0, relwidth=1, relheight=1)
         overlay.lift()
-
         self._theme_overlay = overlay
+
         state = {"switched": False}
 
         def step(i):
@@ -1038,7 +1317,6 @@ class BrightnessApp(ctk.CTk):
             except Exception:
                 pass
 
-            # Switch the actual CustomTkinter theme near the middle of the fade.
             if not state["switched"] and i >= steps // 2:
                 state["switched"] = True
                 try:
@@ -1052,7 +1330,6 @@ class BrightnessApp(ctk.CTk):
                     overlay.destroy()
                 except Exception:
                     pass
-
                 self._theme_overlay = None
                 self._theme_anim_job = None
                 return
@@ -1063,18 +1340,24 @@ class BrightnessApp(ctk.CTk):
 
     def apply_theme(self) -> None:
         theme = self.detect_theme()
-
         if theme == self.current_theme:
             return
 
         old_theme = self.current_theme
         self.current_theme = theme
-
         self._animate_theme(old_theme, theme)
 
     def theme_tick(self) -> None:
         self.apply_theme()
         self.after(8000, self.theme_tick)
+
+    def on_theme_mode(self, _value: str) -> None:
+        self.apply_theme()
+
+    def detect_theme(self) -> str:
+        if self.theme_mode_var.get() == "Auto":
+            return get_auto_theme()
+        return get_windows_theme()
 
     # ------------------------------------------------------------
     # App logic
@@ -1094,13 +1377,18 @@ class BrightnessApp(ctk.CTk):
         self.worker_generation += 1
         gen = self.worker_generation
 
-        self.worker_thread = threading.Thread(target=self.worker, args=(camera, interval, gen), daemon=True)
+        self.worker_thread = threading.Thread(
+            target=self.worker,
+            args=(camera, interval, gen),
+            daemon=True,
+        )
         self.worker_thread.start()
 
         self.is_running = True
+
         self.set_status("Running", "Monitoring ambient light", "running")
-        self.start_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
+        self.refresh_run_controls()
+        self.update_tray_state()
         self.show_toast("Automation started", "success")
 
     def stop(self):
@@ -1109,8 +1397,14 @@ class BrightnessApp(ctk.CTk):
         self.is_running = False
 
         self.set_status("Paused", "Automation stopped")
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
+        self.refresh_run_controls()
+        self.update_tray_state()
+
+    def toggle_running(self):
+        if self.is_running:
+            self.stop()
+        else:
+            self.start()
 
     def worker(self, camera, interval, generation):
         last_target = None
@@ -1203,6 +1497,7 @@ class BrightnessApp(ctk.CTk):
 
                 if kind == "reading":
                     value, target = payload
+
                     self.last_value_var.set(f"{value:.1f}")
                     self.last_target_var.set(f"{target}%")
                     self.progress.set(target / 100)
@@ -1216,6 +1511,7 @@ class BrightnessApp(ctk.CTk):
 
                 elif kind == "test_done":
                     value, target = payload
+
                     self.last_value_var.set(f"{value:.1f}")
                     self.last_target_var.set(f"{target}%")
                     self.progress.set(target / 100)
@@ -1223,12 +1519,14 @@ class BrightnessApp(ctk.CTk):
 
                     self.testing = False
                     self.test_btn.configure(state="normal")
+
                     self.set_status("Test complete", "Camera sample captured", "success")
                     self.show_toast(f"Ambient {value:.1f} -> Target {target}%", "success")
 
                 elif kind == "test_error":
                     self.testing = False
                     self.test_btn.configure(state="normal")
+
                     self.set_status("Camera error", str(payload), "error")
                     self.show_toast(str(payload), "error")
 
@@ -1237,6 +1535,7 @@ class BrightnessApp(ctk.CTk):
                         "show": self.show_window,
                         "start": self.start,
                         "stop": self.stop,
+                        "toggle": self.toggle_running,
                         "quit": self.quit_app,
                     }.get(payload)
 
@@ -1247,14 +1546,6 @@ class BrightnessApp(ctk.CTk):
             pass
 
         self.after(150, self.process_events)
-
-    def on_theme_mode(self, _value: str) -> None:
-        self.apply_theme()
-
-    def detect_theme(self) -> str:
-        if self.theme_mode_var.get() == "Auto":
-            return get_auto_theme()
-        return get_windows_theme()
 
     # ------------------------------------------------------------
     # Startup / tray
@@ -1272,7 +1563,11 @@ class BrightnessApp(ctk.CTk):
     def startup_command():
         if getattr(sys, "frozen", False):
             return f'"{sys.executable}" {AUTOSTART_FLAG}'
-        return f'"{Path(sys.executable).with_name("pythonw.exe")}" "{Path(__file__).resolve()}" {AUTOSTART_FLAG}'
+
+        return (
+            f'"{Path(sys.executable).with_name("pythonw.exe")}" '
+            f'"{Path(__file__).resolve()}" {AUTOSTART_FLAG}'
+        )
 
     def ensure_startup_command(self):
         if not self.startup_var.get():
@@ -1288,7 +1583,6 @@ class BrightnessApp(ctk.CTk):
     def toggle_startup(self):
         try:
             import winreg
-
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
                 if self.startup_var.get():
                     winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, self.startup_command())
@@ -1299,7 +1593,6 @@ class BrightnessApp(ctk.CTk):
                         pass
 
             self.show_toast("Startup setting updated", "success")
-
         except OSError as exc:
             self.startup_var.set(False)
             self.show_toast(str(exc), "error")
@@ -1308,23 +1601,59 @@ class BrightnessApp(ctk.CTk):
         if pystray is None:
             return
 
-        menu = pystray.Menu(
-            pystray.MenuItem("Show", lambda *_: self.events.put(("tray", "show")), default=True),
-            pystray.MenuItem("Start automation", lambda *_: self.events.put(("tray", "start"))),
-            pystray.MenuItem("Stop automation", lambda *_: self.events.put(("tray", "stop"))),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", lambda *_: self.events.put(("tray", "quit"))),
-        )
+        automation_item = None
+        tray_action = lambda *_: self.events.put(("tray", "toggle"))
 
+        try:
+            automation_item = pystray.MenuItem(
+                "Automation",
+                tray_action,
+                checked=bool(self.is_running),
+            )
+        except TypeError:
+            automation_item = pystray.MenuItem("Automation", tray_action)
+        except Exception:
+            automation_item = None
+
+        items = [
+            pystray.MenuItem("Show", lambda *_: self.events.put(("tray", "show")), default=True),
+        ]
+
+        if automation_item is not None:
+            items.append(automation_item)
+
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("Quit", lambda *_: self.events.put(("tray", "quit"))))
+
+        menu = pystray.Menu(*items)
+
+        self.tray_toggle_item = automation_item
         self.tray_icon = pystray.Icon(
             APP_NAME,
-            self.app_icon.resize((64, 64), LANCZOS),
+            create_app_icon(64),
             APP_NAME,
             menu,
         )
 
         self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
         self.tray_thread.start()
+
+        self.after(300, self.update_tray_state)
+
+    def update_tray_state(self):
+        if self.tray_toggle_item is None:
+            return
+
+        try:
+            self.tray_toggle_item.checked = bool(self.is_running)
+        except Exception:
+            pass
+
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.update_menu()
+            except Exception:
+                pass
 
     def launch_autostart(self):
         self.start()
@@ -1357,7 +1686,9 @@ class BrightnessApp(ctk.CTk):
 
 
 def main():
+    enable_windows_enhancements()
     ctk.set_default_color_theme("blue")
+
     app = BrightnessApp()
 
     if AUTOSTART_FLAG in sys.argv:
