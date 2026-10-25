@@ -28,12 +28,34 @@ logging.basicConfig(
 # ------------------------------------------------------------
 # Calibration
 # ------------------------------------------------------------
-# If the room is still too bright, increase TARGET_GAMMA to 3.0
-# or lower TARGET_MAX to 55.
-AMBIENT_MAX = 255.0
-TARGET_MIN = 5
-TARGET_MAX = 60
-TARGET_GAMMA = 2.8
+# If the result is still too dark, increase AMBIENT_PERCENTILE to 50 or 55.
+# If it is too bright in dark rooms, decrease AMBIENT_PERCENTILE to 40 or 35.
+AMBIENT_PERCENTILE = 45
+
+# Piecewise calibration.
+# Each tuple is: (camera_ambient_value, target_brightness_percent)
+#
+# Current tuning:
+# - ~120  -> around 12%
+# - ~132  -> around 16%
+# - ~153  -> around 41%
+# - ~155  -> around 45%
+# - ~165  -> around 58%
+# - ~180  -> around 70%
+CALIBRATION_POINTS = (
+    (0.0, 5),
+    (70.0, 7),
+    (100.0, 9),
+    (115.0, 11),
+    (130.0, 14),
+    (140.0, 22),
+    (150.0, 36),
+    (155.0, 45),
+    (165.0, 58),
+    (180.0, 70),
+    (210.0, 85),
+    (255.0, 100),
+)
 
 
 def set_brightness(percent: int) -> None:
@@ -106,26 +128,45 @@ def ambient_value(frame) -> float:
     if crop.size == 0:
         return 0.0
 
-    # Lower-middle percentile makes dim-room readings less affected by
-    # small bright areas, lamps, noise, and webcam auto-exposure lift.
+    # Percentile keeps the estimate robust against small bright spots/noise.
     if np is not None:
-        return float(np.percentile(crop, 45))
+        return float(np.percentile(crop, AMBIENT_PERCENTILE))
 
     return float(cv2.mean(crop)[0])
+
+
+def _interp_brightness(value: float) -> int:
+    points = CALIBRATION_POINTS
+
+    if value <= points[0][0]:
+        return int(points[0][1])
+
+    if value >= points[-1][0]:
+        return int(points[-1][1])
+
+    for i in range(len(points) - 1):
+        x0, y0 = points[i]
+        x1, y1 = points[i + 1]
+
+        if value <= x1:
+            if x1 <= x0:
+                return int(y1)
+
+            t = (value - x0) / (x1 - x0)
+            return int(round(y0 + t * (y1 - y0)))
+
+    return int(points[-1][1])
 
 
 def value_to_brightness(value: float) -> int:
     """
     Convert camera ambient value to display brightness percent.
 
-    The old mapping was too linear and made dim rooms too bright.
-    This uses a gamma curve so low ambient values stay much darker.
+    This uses piecewise calibration instead of a single gamma curve,
+    so both dark rooms and normally lit rooms behave more predictably.
     """
-    value = max(0.0, min(AMBIENT_MAX, float(value)))
-    normalized = value / AMBIENT_MAX
-    normalized = normalized ** TARGET_GAMMA
-
-    return round(TARGET_MIN + normalized * (TARGET_MAX - TARGET_MIN))
+    value = max(0.0, min(255.0, float(value)))
+    return _interp_brightness(value)
 
 
 def sample_camera(index: int) -> float | None:
