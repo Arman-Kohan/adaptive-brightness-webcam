@@ -25,9 +25,11 @@ except ImportError:
 import customtkinter as ctk
 import adaptive_brightness as engine
 
+
 APP_NAME = "Adaptive Brightness Webcam"
 AUTOSTART_FLAG = "--autostart"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
 
 # ------------------------------------------------------------
 # iOS 27-style design tokens
@@ -38,15 +40,14 @@ ACCENT_TEXT = ("#0859DB", "#9DB9FF")
 
 SUCCESS = ("#188A55", "#3DDC84")
 WARNING = ("#B36B00", "#FFC76B")
-
 DANGER = ("#E24C4B", "#FF6961")
 DANGER_HOVER = ("#C43D3C", "#E85C58")
 
 APP_BG = ("#F6F8FE", "#0A111F")
 PAGE_BG = APP_BG
 CARD_BG = APP_BG
-
 CARD_BORDER = ("#D8E2F5", "#243250")
+
 FIELD_BG = ("#EDF2FB", "#0B1322")
 FIELD_BORDER = ("#C9D6EF", "#2B3C63")
 
@@ -55,7 +56,6 @@ TEXT_SECONDARY = ("#5B6B8A", "#93A3C6")
 
 SEG_BG = FIELD_BG
 SEG_HOVER = ("#E5EDFF", "#182541")
-
 TRACK_OFF = ("#A9B7D2", "#33415E")
 
 DISABLED_BG = ("#E6EAF3", "#1B2438")
@@ -65,10 +65,12 @@ DISABLED_BORDER = ("#D3DBEA", "#2B3854")
 OUTLINE_HOVER = ("#E9F0FF", "#18274A")
 SUBTLE_BG = FIELD_BG
 
+
 try:
     LANCZOS = Image.Resampling.LANCZOS
 except AttributeError:
     LANCZOS = Image.LANCZOS
+
 
 _ICON_MASTER = None
 
@@ -80,6 +82,7 @@ def get_auto_theme() -> str:
 def get_windows_theme() -> str:
     try:
         import winreg
+
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
@@ -114,12 +117,6 @@ def _lerp_color(a, b, t):
 def _build_icon_master(size: int = 1024) -> Image.Image:
     """
     Build a clean, high-contrast master icon.
-
-    Design choices for taskbar sharpness:
-    - larger ring
-    - larger moon
-    - no tiny stars
-    - strong dark lens behind ring/moon
     """
     size = max(256, int(size))
 
@@ -132,7 +129,6 @@ def _build_icon_master(size: int = 1024) -> Image.Image:
 
     for y in range(size):
         t = y / max(1, size - 1)
-
         if t < 0.55:
             color = _lerp_color(top, mid, t / 0.55)
         else:
@@ -151,7 +147,6 @@ def _build_icon_master(size: int = 1024) -> Image.Image:
 
     icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     icon.paste(gradient, (0, 0), mask)
-
     draw = ImageDraw.Draw(icon)
 
     # Dark lens for contrast.
@@ -213,8 +208,10 @@ def _build_icon_master(size: int = 1024) -> Image.Image:
 
 def _get_icon_master(size: int = 1024) -> Image.Image:
     global _ICON_MASTER
+
     if _ICON_MASTER is None:
         _ICON_MASTER = _build_icon_master(size)
+
     return _ICON_MASTER
 
 
@@ -226,6 +223,7 @@ def create_app_icon(size: int = 256) -> Image.Image:
 def save_app_icon() -> Path | None:
     try:
         path = Path(tempfile.gettempdir()) / f"adaptive_brightness_webcam_{os.getpid()}.ico"
+
         _get_icon_master(1024).save(
             path,
             format="ICO",
@@ -242,6 +240,7 @@ def save_app_icon() -> Path | None:
                 (256, 256),
             ],
         )
+
         return path
     except Exception:
         return None
@@ -261,6 +260,7 @@ class AutoHideScrollableFrame(ctk.CTkScrollableFrame):
         if self._ah_canvas is not None and self._ah_scrollbar is not None:
             self._ah_manager = self._ah_scrollbar.winfo_manager() or "grid"
             self._ah_ready = True
+
             self._hide_scrollbar()
 
             self._ah_canvas.bind("<Configure>", self._ah_on_configure, add="+")
@@ -303,6 +303,7 @@ class AutoHideScrollableFrame(ctk.CTkScrollableFrame):
 
         try:
             bbox = self._ah_canvas.bbox("all")
+
             if not bbox:
                 self._hide_scrollbar()
                 return
@@ -344,7 +345,6 @@ class BrightnessApp(ctk.CTk):
         self.camera_lock = threading.Lock()
         self.brightness_lock = threading.Lock()
         self.events: queue.Queue = queue.Queue()
-
         self.worker_generation = 0
         self.testing = False
         self.is_running = False
@@ -353,8 +353,15 @@ class BrightnessApp(ctk.CTk):
         self.tray_thread = None
         self.tray_toggle_item = None
         self.toast_job = None
-
         self.camera_chips = []
+
+        # ------------------------------------------------------------
+        # Sleep / Resume guard
+        # ------------------------------------------------------------
+        self.power_sleeping = threading.Event()
+        self._last_resume = -1000.0
+        self._resume_lock = threading.Lock()
+        self._power_wndproc = None
 
         # Settings variables
         self.camera_var = ctk.StringVar(value="0")
@@ -380,13 +387,17 @@ class BrightnessApp(ctk.CTk):
         self.after(1200, self._apply_window_icon)
 
         self.start_tray()
+        self._start_power_monitor()
         self.ensure_startup_command()
 
     def center_window(self) -> None:
         self.update_idletasks()
+
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+
         w = min(1120, max(860, int(sw * 0.76), sw - 24))
         h = min(820, max(600, int(sh * 0.82), sh - 90))
+
         self.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 16)}")
 
     def _apply_window_icon(self) -> None:
@@ -454,6 +465,7 @@ class BrightnessApp(ctk.CTk):
         except Exception:
             for key in ("text_color_disabled", "border_color", "corner_radius"):
                 kwargs.pop(key, None)
+
             try:
                 widget.configure(**kwargs)
             except Exception:
@@ -496,8 +508,8 @@ class BrightnessApp(ctk.CTk):
             corner_radius=20,
             font=("Segoe UI", 11, "bold"),
         )
-        base.update(style)
 
+        base.update(style)
         return self._make_ctk_button(parent, **base)
 
     def make_switch(self, parent, variable, command=None):
@@ -613,12 +625,15 @@ class BrightnessApp(ctk.CTk):
         def select(value):
             if variable.get() != value:
                 variable.set(value)
+
             if callable(command):
                 command(value)
+
             refresh()
 
         def refresh(*_args):
             current = variable.get()
+
             for btn, value in buttons:
                 if value == current:
                     btn.configure(
@@ -635,6 +650,7 @@ class BrightnessApp(ctk.CTk):
 
         for i, value in enumerate(values):
             frame.grid_columnconfigure(i, weight=1)
+
             btn = self._make_ctk_button(
                 frame,
                 text=value,
@@ -646,11 +662,13 @@ class BrightnessApp(ctk.CTk):
                 font=("Segoe UI", 10, "bold"),
                 command=lambda v=value: select(v),
             )
+
             btn.grid(row=0, column=i, sticky="nsew", padx=3, pady=3)
             buttons.append((btn, value))
 
         self._trace(variable, refresh)
         refresh()
+
         return frame
 
     # ------------------------------------------------------------
@@ -658,6 +676,7 @@ class BrightnessApp(ctk.CTk):
     # ------------------------------------------------------------
     def build_ui(self) -> None:
         self.configure(fg_color=APP_BG)
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
@@ -952,17 +971,18 @@ class BrightnessApp(ctk.CTk):
         self.camera_value_label.pack(side="right")
 
         self._trace(self.camera_var, self._update_camera_badge)
-
         self.build_camera_chips(container)
 
         self.ios_hint(
             container,
             "0 is usually the built-in webcam. The camera only wakes for a short sample.",
         )
+
         self.ios_divider(container)
 
         # Interval
         self.ios_section_title(container, "Check interval")
+
         interval_row = self.ios_row(container, "Seconds")
 
         ctk.CTkEntry(
@@ -989,6 +1009,7 @@ class BrightnessApp(ctk.CTk):
 
         def _sync_preset(*_args):
             value = self.interval_var.get().strip()
+
             if value in ("120", "300", "600") and self.preset_var.get() != value:
                 self.preset_var.set(value)
 
@@ -998,10 +1019,12 @@ class BrightnessApp(ctk.CTk):
             container,
             "Minimum 30 seconds. Battery mode automatically adds extra delay.",
         )
+
         self.ios_divider(container)
 
         # Appearance
         self.ios_section_title(container, "Appearance")
+
         theme_row = self.ios_row(container, "App theme")
 
         theme_seg = self.ios_segmented(
@@ -1018,6 +1041,7 @@ class BrightnessApp(ctk.CTk):
             container,
             "Auto follows day/night. Windows follows the system theme.",
         )
+
         self.ios_divider(container)
 
         # Behavior
@@ -1084,8 +1108,8 @@ class BrightnessApp(ctk.CTk):
                 font=("Segoe UI", 10, "bold"),
                 command=lambda i=index: self.camera_var.set(str(i)),
             )
-            chip.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
 
+            chip.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
             self.camera_chips.append((chip, str(index)))
 
         def refresh(*_args):
@@ -1130,6 +1154,7 @@ class BrightnessApp(ctk.CTk):
         content.pack(fill="both", expand=True, pady=(20, 0))
 
         self.metric_card(content, "Ambient light", self.last_value_var, "camera value")
+
         target = self.metric_card(content, "Target brightness", self.last_target_var, "display level")
 
         self.progress = ctk.CTkProgressBar(
@@ -1319,6 +1344,7 @@ class BrightnessApp(ctk.CTk):
 
             if not state["switched"] and i >= steps // 2:
                 state["switched"] = True
+
                 try:
                     ctk.set_appearance_mode(new_theme)
                     self.configure(fg_color=APP_BG)
@@ -1330,6 +1356,7 @@ class BrightnessApp(ctk.CTk):
                     overlay.destroy()
                 except Exception:
                     pass
+
                 self._theme_overlay = None
                 self._theme_anim_job = None
                 return
@@ -1340,11 +1367,13 @@ class BrightnessApp(ctk.CTk):
 
     def apply_theme(self) -> None:
         theme = self.detect_theme()
+
         if theme == self.current_theme:
             return
 
         old_theme = self.current_theme
         self.current_theme = theme
+
         self._animate_theme(old_theme, theme)
 
     def theme_tick(self) -> None:
@@ -1357,7 +1386,211 @@ class BrightnessApp(ctk.CTk):
     def detect_theme(self) -> str:
         if self.theme_mode_var.get() == "Auto":
             return get_auto_theme()
+
         return get_windows_theme()
+
+    # ------------------------------------------------------------
+    # Sleep / Resume handling
+    # ------------------------------------------------------------
+    def _start_power_monitor(self):
+        """Start a hidden Windows message loop to receive suspend/resume events."""
+        threading.Thread(target=self._power_message_loop, daemon=True).start()
+
+    def _recently_resumed(self, grace=30.0):
+        """
+        Return True if Windows has resumed recently.
+        This prevents immediate camera sampling right after Sleep.
+        """
+        try:
+            with self._resume_lock:
+                return (time.monotonic() - self._last_resume) < grace
+        except Exception:
+            return False
+
+    def _interruptible_wait(self, seconds, generation):
+        """
+        Wait like stop_event.wait(seconds), but also notice:
+        - stop requests
+        - worker generation changes
+        - sleep/resume gaps
+        """
+        end = time.monotonic() + max(1.0, float(seconds))
+
+        while not self.stop_event.is_set() and generation == self.worker_generation:
+            remaining = end - time.monotonic()
+
+            if remaining <= 0:
+                break
+
+            chunk = min(2.0, remaining)
+            start = time.monotonic()
+
+            self.stop_event.wait(chunk)
+
+            elapsed = time.monotonic() - start
+
+            # If a short wait took much longer, the system likely slept.
+            if elapsed > chunk + 10.0:
+                self.power_sleeping.clear()
+
+                with self._resume_lock:
+                    self._last_resume = time.monotonic()
+
+                break
+
+            if self.power_sleeping.is_set() or self._recently_resumed():
+                break
+
+    def _power_message_loop(self):
+        """
+        Hidden Windows message loop.
+        Receives WM_POWERBROADCAST / PBT_APMSUSPEND / resume notifications.
+        """
+        try:
+            import ctypes.wintypes as wintypes
+        except Exception:
+            return
+
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+        except Exception:
+            return
+
+        WM_POWERBROADCAST = 0x0218
+
+        PBT_APMSUSPEND = 0x0004
+        PBT_APMRESUMECRITICAL = 0x0006
+        PBT_APMRESUMESUSPEND = 0x0007
+        PBT_APMRESUMEAUTOMATIC = 0x0012
+
+        DEVICE_NOTIFY_WINDOW_HANDLE = 0
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )
+
+        class WNDCLASSW(ctypes.Structure):
+            _fields_ = [
+                ("style", ctypes.c_uint),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", ctypes.c_void_p),
+                ("hIcon", ctypes.c_void_p),
+                ("hCursor", ctypes.c_void_p),
+                ("hbrBackground", ctypes.c_void_p),
+                ("lpszMenuName", ctypes.c_wchar_p),
+                ("lpszClassName", ctypes.c_wchar_p),
+            ]
+
+        def wndproc(hwnd, msg, wparam, lparam):
+            if msg == WM_POWERBROADCAST:
+                if wparam == PBT_APMSUSPEND:
+                    self.power_sleeping.set()
+                    self.events.put(("power", "sleep"))
+                    return 1
+
+                if wparam in (
+                    PBT_APMRESUMECRITICAL,
+                    PBT_APMRESUMESUSPEND,
+                    PBT_APMRESUMEAUTOMATIC,
+                ):
+                    self.power_sleeping.clear()
+
+                    with self._resume_lock:
+                        self._last_resume = time.monotonic()
+
+                    self.events.put(("power", "resume"))
+                    return 1
+
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        try:
+            kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+
+            user32.DefWindowProcW.restype = ctypes.c_long
+            user32.DefWindowProcW.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+            ]
+
+            self._power_wndproc = WNDPROC(wndproc)
+            class_name = f"AdaptiveBrightnessPower_{os.getpid()}"
+
+            wc = WNDCLASSW()
+            wc.style = 0
+            wc.lpfnWndProc = self._power_wndproc
+            wc.cbClsExtra = 0
+            wc.cbWndExtra = 0
+            wc.hInstance = kernel32.GetModuleHandleW(None)
+            wc.hIcon = None
+            wc.hCursor = None
+            wc.hbrBackground = None
+            wc.lpszMenuName = None
+            wc.lpszClassName = class_name
+
+            user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+            user32.RegisterClassW(ctypes.byref(wc))
+
+            user32.CreateWindowExW.restype = ctypes.c_void_p
+            user32.CreateWindowExW.argtypes = [
+                ctypes.c_uint,
+                ctypes.c_wchar_p,
+                ctypes.c_wchar_p,
+                ctypes.c_uint,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+            ]
+
+            hwnd = user32.CreateWindowExW(
+                0,
+                class_name,
+                "AdaptiveBrightnessPower",
+                0,
+                0, 0, 0, 0,
+                0,
+                0,
+                wc.hInstance,
+                0,
+            )
+
+            if not hwnd:
+                return
+
+            try:
+                user32.RegisterSuspendResumeNotification.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                ]
+                user32.RegisterSuspendResumeNotification.restype = ctypes.c_void_p
+                user32.RegisterSuspendResumeNotification(
+                    hwnd,
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
+            except Exception:
+                pass
+
+            msg = wintypes.MSG()
+
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        except Exception:
+            logging.exception("Power monitor failed")
 
     # ------------------------------------------------------------
     # App logic
@@ -1372,6 +1605,10 @@ class BrightnessApp(ctk.CTk):
         except ValueError:
             self.show_toast("Enter a valid camera number and interval.", "error")
             return
+
+        # If user manually starts, do not keep the post-resume grace delay.
+        with self._resume_lock:
+            self._last_resume = -1000.0
 
         self.stop_event.clear()
         self.worker_generation += 1
@@ -1410,12 +1647,32 @@ class BrightnessApp(ctk.CTk):
         last_target = None
 
         while not self.stop_event.is_set() and generation == self.worker_generation:
+            # Do nothing while Windows is asleep.
+            if self.power_sleeping.is_set():
+                last_target = None
+                self.stop_event.wait(5)
+                continue
+
+            # Do nothing immediately after resume.
+            if self._recently_resumed():
+                last_target = None
+                self.stop_event.wait(5)
+                continue
+
             try:
                 with self.camera_lock:
                     value = engine.sample_camera(camera)
 
+                # If sleep/resume happened during sampling, discard this sample.
+                if self.power_sleeping.is_set() or self._recently_resumed():
+                    last_target = None
+                    self.stop_event.wait(1)
+                    continue
+
                 if value is None:
-                    self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
+                    self.events.put(
+                        ("status", ("Camera unavailable", "Waiting for next check", "warning"))
+                    )
                 else:
                     target = engine.value_to_brightness(value)
 
@@ -1426,8 +1683,20 @@ class BrightnessApp(ctk.CTk):
                             engine.ramp_brightness(
                                 last_target,
                                 target,
-                                lambda: self.stop_event.is_set() or generation != self.worker_generation,
+                                lambda: self.stop_event.is_set()
+                                or generation != self.worker_generation
+                                or self.power_sleeping.is_set(),
                             )
+
+                    # If sleep/stop happened during ramp, do not trust last_target.
+                    if (
+                        self.power_sleeping.is_set()
+                        or self.stop_event.is_set()
+                        or generation != self.worker_generation
+                    ):
+                        last_target = None
+                        self.stop_event.wait(1)
+                        continue
 
                     last_target = target
                     self.events.put(("reading", (value, target)))
@@ -1436,7 +1705,7 @@ class BrightnessApp(ctk.CTk):
                 logging.exception("Brightness update failed")
                 self.events.put(("status", ("Update failed", str(exc), "error")))
 
-            self.stop_event.wait(self.power_aware_interval(interval))
+            self._interruptible_wait(self.power_aware_interval(interval), generation)
 
     @staticmethod
     def power_aware_interval(base_interval):
@@ -1457,6 +1726,7 @@ class BrightnessApp(ctk.CTk):
             if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
                 if status.ACLineStatus == 0:
                     return max(base_interval * 2.5, 300.0)
+
         except Exception:
             pass
 
@@ -1484,9 +1754,12 @@ class BrightnessApp(ctk.CTk):
                 value = engine.sample_camera(camera)
 
             if value is None:
-                self.events.put(("test_error", "Camera not found. Check camera number and Windows permissions."))
+                self.events.put(
+                    ("test_error", "Camera not found. Check camera number and Windows permissions.")
+                )
             else:
                 self.events.put(("test_done", (value, engine.value_to_brightness(value))))
+
         except Exception as exc:
             self.events.put(("test_error", str(exc)))
 
@@ -1508,6 +1781,15 @@ class BrightnessApp(ctk.CTk):
 
                 elif kind == "status":
                     self.set_status(*payload)
+
+                elif kind == "power":
+                    if payload == "sleep":
+                        self.set_status("Sleeping", "Paused while Windows is asleep", "idle")
+                    elif payload == "resume":
+                        if self.is_running:
+                            self.set_status("Running", "Monitoring ambient light", "running")
+                        else:
+                            self.set_status("Paused", "Automation stopped")
 
                 elif kind == "test_done":
                     value, target = payload
@@ -1553,9 +1835,12 @@ class BrightnessApp(ctk.CTk):
     def startup_enabled(self):
         try:
             import winreg
+
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY) as key:
                 winreg.QueryValueEx(key, APP_NAME)
+
             return True
+
         except (ImportError, FileNotFoundError, OSError):
             return False
 
@@ -1575,15 +1860,28 @@ class BrightnessApp(ctk.CTk):
 
         try:
             import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                STARTUP_KEY,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as key:
                 winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, self.startup_command())
+
         except OSError:
             pass
 
     def toggle_startup(self):
         try:
             import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                STARTUP_KEY,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as key:
                 if self.startup_var.get():
                     winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, self.startup_command())
                 else:
@@ -1593,6 +1891,7 @@ class BrightnessApp(ctk.CTk):
                         pass
 
             self.show_toast("Startup setting updated", "success")
+
         except OSError as exc:
             self.startup_var.set(False)
             self.show_toast(str(exc), "error")
@@ -1628,6 +1927,7 @@ class BrightnessApp(ctk.CTk):
         menu = pystray.Menu(*items)
 
         self.tray_toggle_item = automation_item
+
         self.tray_icon = pystray.Icon(
             APP_NAME,
             create_app_icon(64),
@@ -1657,6 +1957,7 @@ class BrightnessApp(ctk.CTk):
 
     def launch_autostart(self):
         self.start()
+
         if self.tray_icon is not None:
             self.withdraw()
 
