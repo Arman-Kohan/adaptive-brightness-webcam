@@ -46,8 +46,7 @@ def ramp_brightness(start: int, end: int, cancel_check=None) -> None:
     """
     Smoothly move brightness from start to end.
     cancel_check is an optional callable. If it returns True,
-    the ramp is cancelled. This fixes the error where app.py
-    was calling ramp_brightness with 3 arguments.
+    the ramp is cancelled.
     """
     if start == end:
         return
@@ -105,7 +104,8 @@ def sample_camera(index: int) -> float | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adaptive brightness controller")
     parser.add_argument("--camera", type=int, default=0)
-    parser.add_argument("--interval", type=float, default=60.0)
+    # Changed default interval from 60.0 to 120.0 (2 minutes)
+    parser.add_argument("--interval", type=float, default=120.0) 
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     
