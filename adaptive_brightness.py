@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,12 +20,18 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 
+def _global_exception_handler(exc_type, exc_value, exc_traceback):
+    """Log unhandled exceptions instead of crashing silently."""
+    logging.error("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = _global_exception_handler
+
 
 class PowerWatcher:
     """Watches Windows suspend/resume so we can skip work while asleep."""
 
     PBT_APMSUSPEND = 0x0004
-    PBT_RESUME_EVENTS = (0x0006, 0x0007, 0x000A, 0x0012)
+    PBT_RESUME_EVENTS = (0x0007, 0x0012)  # RESUMESUSPEND, RESUMEAUTOMATIC
 
     def __init__(self) -> None:
         self.suspended = threading.Event()
@@ -33,10 +40,13 @@ class PowerWatcher:
         self._register()
 
     def _callback(self, context, event_type, setting):
-        if event_type == self.PBT_APMSUSPEND:
-            self.suspended.set()
-        elif event_type in self.PBT_RESUME_EVENTS:
-            self.suspended.clear()
+        try:
+            if event_type == self.PBT_APMSUSPEND:
+                self.suspended.set()
+            elif event_type in self.PBT_RESUME_EVENTS:
+                self.suspended.clear()
+        except Exception:
+            pass
         return 0
 
     def _register(self) -> None:
@@ -69,10 +79,7 @@ class PowerWatcher:
         if self._handle is not None:
             try:
                 import ctypes
-
-                ctypes.windll.powrprof.PowerUnregisterSuspendResumeNotification(
-                    self._handle
-                )
+                ctypes.windll.powrprof.PowerUnregisterSuspendResumeNotification(self._handle)
             except Exception:
                 pass
             self._handle = None
@@ -81,37 +88,45 @@ class PowerWatcher:
 def set_brightness(percent: int) -> None:
     percent = max(10, min(100, int(percent)))
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    
+    # Added timeout to prevent hanging if powercfg gets stuck during resume
     for mode in ("SETACVALUEINDEX", "SETDCVALUEINDEX"):
+        try:
+            subprocess.run(
+                [
+                    "powercfg",
+                    f"/{mode}",
+                    "SCHEME_CURRENT",
+                    "SUB_VIDEO",
+                    BRIGHTNESS_GUID,
+                    str(percent),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=no_window,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            logging.warning("powercfg %s timed out", mode)
+        except Exception:
+            logging.exception("powercfg %s failed", mode)
+
+    try:
         subprocess.run(
-            [
-                "powercfg",
-                f"/{mode}",
-                "SCHEME_CURRENT",
-                "SUB_VIDEO",
-                BRIGHTNESS_GUID,
-                str(percent),
-            ],
+            ["powercfg", "/S", "SCHEME_CURRENT"],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=no_window,
+            timeout=5,
         )
-    subprocess.run(
-        ["powercfg", "/S", "SCHEME_CURRENT"],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=no_window,
-    )
+    except Exception:
+        logging.exception("powercfg apply failed")
 
 
 def ramp_brightness(start: int, end: int, cancel_check=None) -> None:
-    """
-    Smoothly move brightness from start to end.
-
-    cancel_check is an optional callable. If it returns True,
-    the ramp is cancelled.
-    """
+    """Smoothly move brightness from start to end."""
     if start == end:
         return
 
@@ -145,11 +160,11 @@ def value_to_brightness(value: float) -> int:
 
 
 def sample_camera(index: int) -> float | None:
-    camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    if not camera.isOpened():
-        return None
-
     try:
+        camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not camera.isOpened():
+            return None
+
         # Warm up the camera so auto-exposure settles.
         for _ in range(8):
             camera.read()
@@ -169,8 +184,14 @@ def sample_camera(index: int) -> float | None:
 
         samples.sort()
         return samples[len(samples) // 2]
+    except Exception:
+        logging.exception("Camera sampling failed")
+        return None
     finally:
-        camera.release()
+        try:
+            camera.release()
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -193,8 +214,8 @@ def main() -> None:
                 while watcher.suspended.is_set():
                     time.sleep(2)
 
-                # Give the camera and display pipeline a moment after resume.
-                time.sleep(3)
+                # Wait longer after resume for USB/Display drivers to stabilize
+                time.sleep(6)
                 continue
 
             value = sample_camera(args.camera)
