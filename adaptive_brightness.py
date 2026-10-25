@@ -9,6 +9,11 @@ from pathlib import Path
 
 import cv2
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 
 BRIGHTNESS_GUID = "aded5e82-b909-4619-9949-f5d71dac0bcb"
 LOG_FILE = Path.home() / ".adaptive-brightness-webcam.log"
@@ -20,8 +25,19 @@ logging.basicConfig(
 )
 
 
+# ------------------------------------------------------------
+# Calibration
+# ------------------------------------------------------------
+# If the room is still too bright, increase TARGET_GAMMA to 3.0
+# or lower TARGET_MAX to 55.
+AMBIENT_MAX = 255.0
+TARGET_MIN = 5
+TARGET_MAX = 60
+TARGET_GAMMA = 2.8
+
+
 def set_brightness(percent: int) -> None:
-    percent = max(10, min(100, int(percent)))
+    percent = max(0, min(100, int(percent)))
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     for mode in ("SETACVALUEINDEX", "SETDCVALUEINDEX"):
@@ -54,8 +70,7 @@ def ramp_brightness(start: int, end: int, cancel_check=None) -> None:
     Smoothly move brightness from start to end.
 
     cancel_check is an optional callable. If it returns True,
-    the ramp is cancelled. This fixes the error where app.py
-    was calling ramp_brightness with 3 arguments.
+    the ramp is cancelled.
     """
     if start == end:
         return
@@ -68,7 +83,7 @@ def ramp_brightness(start: int, end: int, cancel_check=None) -> None:
             return
 
         value += step
-        value = max(10, min(100, value))
+        value = max(0, min(100, value))
 
         if (step > 0 and value > end) or (step < 0 and value < end):
             value = end
@@ -81,18 +96,36 @@ def ambient_value(frame) -> float:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     height, width = hsv.shape[:2]
 
+    # Use only the V channel and crop edges.
     crop = hsv[
         height // 10 : height * 9 // 10,
         width // 10 : width * 9 // 10,
+        2,
     ]
 
-    return float(cv2.mean(crop)[2])
+    if crop.size == 0:
+        return 0.0
+
+    # Lower-middle percentile makes dim-room readings less affected by
+    # small bright areas, lamps, noise, and webcam auto-exposure lift.
+    if np is not None:
+        return float(np.percentile(crop, 45))
+
+    return float(cv2.mean(crop)[0])
 
 
 def value_to_brightness(value: float) -> int:
-    low, high = 20.0, 185.0
-    normalized = max(0.0, min(1.0, (value - low) / (high - low)))
-    return round(15 + normalized * 55)
+    """
+    Convert camera ambient value to display brightness percent.
+
+    The old mapping was too linear and made dim rooms too bright.
+    This uses a gamma curve so low ambient values stay much darker.
+    """
+    value = max(0.0, min(AMBIENT_MAX, float(value)))
+    normalized = value / AMBIENT_MAX
+    normalized = normalized ** TARGET_GAMMA
+
+    return round(TARGET_MIN + normalized * (TARGET_MAX - TARGET_MIN))
 
 
 def sample_camera(index: int) -> float | None:
@@ -122,6 +155,7 @@ def sample_camera(index: int) -> float | None:
 
         samples.sort()
         return samples[len(samples) // 2]
+
     finally:
         camera.release()
 
@@ -150,6 +184,7 @@ def main() -> None:
                         set_brightness(target)
                     else:
                         ramp_brightness(last_target, target)
+
                     last_target = target
                 except Exception:
                     logging.exception("Brightness update failed")
