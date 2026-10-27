@@ -4,4 +4,7 @@ __pycache__/
 *.log
 .idea/
 .vscode/
-
+build/
+dist/
+AdaptiveBrightnessWebcam.spec
+app_icon.ico

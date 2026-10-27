@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
 import queue
 import sys
@@ -1363,23 +1364,36 @@ class BrightnessApp(ctk.CTk):
     # App logic
     # ------------------------------------------------------------
     def start(self):
-        if self.worker_thread and self.worker_thread.is_alive() and self.is_running:
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.stop_event.set()
+            self.worker_generation += 1
+            self.is_running = False
+            self.refresh_run_controls()
+            self.update_tray_state()
+            self.show_toast("Previous run is still stopping.", "error")
             return
 
         try:
             camera = int(self.camera_var.get())
-            interval = max(30.0, float(self.interval_var.get()))
-        except ValueError:
+            interval = float(self.interval_var.get())
+        except (TypeError, ValueError):
             self.show_toast("Enter a valid camera number and interval.", "error")
             return
+        if camera < 0:
+            self.show_toast("Camera number must be non-negative.", "error")
+            return
+        if not math.isfinite(interval) or interval < 30.0:
+            self.show_toast("Interval must be a finite value of at least 30 seconds.", "error")
+            return
 
-        self.stop_event.clear()
+        worker_stop_event = threading.Event()
+        self.stop_event = worker_stop_event
         self.worker_generation += 1
         gen = self.worker_generation
 
         self.worker_thread = threading.Thread(
             target=self.worker,
-            args=(camera, interval, gen),
+            args=(camera, interval, gen, worker_stop_event),
             daemon=True,
         )
         self.worker_thread.start()
@@ -1406,10 +1420,11 @@ class BrightnessApp(ctk.CTk):
         else:
             self.start()
 
-    def worker(self, camera, interval, generation):
-        last_target = None
+    def worker(self, camera, interval, generation, worker_stop_event):
+        last_measured_target = None
+        last_commanded_target = None
 
-        while not self.stop_event.is_set() and generation == self.worker_generation:
+        while not worker_stop_event.is_set() and generation == self.worker_generation:
             try:
                 with self.camera_lock:
                     value = engine.sample_camera(camera)
@@ -1418,25 +1433,35 @@ class BrightnessApp(ctk.CTk):
                     self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
                 else:
                     target = engine.value_to_brightness(value)
+                    last_measured_target = target
 
-                    with self.brightness_lock:
-                        if last_target is None:
-                            engine.set_brightness(target)
-                        elif abs(target - last_target) >= 3:
-                            engine.ramp_brightness(
-                                last_target,
-                                target,
-                                lambda: self.stop_event.is_set() or generation != self.worker_generation,
-                            )
+                    if not worker_stop_event.is_set() and generation == self.worker_generation:
+                        with self.brightness_lock:
+                            if not worker_stop_event.is_set() and generation == self.worker_generation:
+                                if last_commanded_target is None:
+                                    engine.set_brightness(target)
+                                    last_commanded_target = target
+                                elif abs(target - last_commanded_target) >= 3:
+                                    completed = engine.ramp_brightness(
+                                        last_commanded_target,
+                                        target,
+                                        lambda: worker_stop_event.is_set()
+                                        or generation != self.worker_generation,
+                                    )
+                                    if completed:
+                                        last_commanded_target = target
 
-                    last_target = target
-                    self.events.put(("reading", (value, target)))
+                        if not worker_stop_event.is_set() and generation == self.worker_generation:
+                            self.events.put(("reading", (value, last_measured_target)))
 
             except Exception as exc:
                 logging.exception("Brightness update failed")
                 self.events.put(("status", ("Update failed", str(exc), "error")))
 
-            self.stop_event.wait(self.power_aware_interval(interval))
+            worker_stop_event.wait(self.power_aware_interval(interval))
+
+        if self.worker_thread is threading.current_thread():
+            self.worker_thread = None
 
     @staticmethod
     def power_aware_interval(base_interval):
@@ -1468,8 +1493,11 @@ class BrightnessApp(ctk.CTk):
 
         try:
             camera = int(self.camera_var.get())
-        except ValueError:
+        except (TypeError, ValueError):
             self.show_toast("Enter a valid camera number.", "error")
+            return
+        if camera < 0:
+            self.show_toast("Camera number must be non-negative.", "error")
             return
 
         self.testing = True
@@ -1675,6 +1703,8 @@ class BrightnessApp(ctk.CTk):
             return
 
         self.stop_event.set()
+        self.worker_generation += 1
+        self.is_running = False
 
         if self.tray_icon:
             try:
@@ -1682,6 +1712,12 @@ class BrightnessApp(ctk.CTk):
             except Exception:
                 pass
 
+        self._finish_close()
+
+    def _finish_close(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.after(50, self._finish_close)
+            return
         self.destroy()
 
 

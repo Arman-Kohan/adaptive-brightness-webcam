@@ -2,12 +2,14 @@
 from __future__ import annotations
 import argparse
 import logging
+import math
 import subprocess
 import time
 from pathlib import Path
 import cv2
 
 BRIGHTNESS_GUID = "aded5e82-b909-4619-9949-f5d71dac0bcb"
+MEASUREMENT_SAMPLE_COUNT = 5
 LOG_FILE = Path.home() / ".adaptive-brightness-webcam.log"
 
 logging.basicConfig(
@@ -19,48 +21,78 @@ logging.basicConfig(
 def set_brightness(percent: int) -> None:
     percent = max(10, min(100, int(percent)))
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    for mode in ("SETACVALUEINDEX", "SETDCVALUEINDEX"):
-        subprocess.run(
+    commands = [
+        (
+            "AC brightness",
             [
                 "powercfg",
-                f"/{mode}",
+                "/SETACVALUEINDEX",
                 "SCHEME_CURRENT",
                 "SUB_VIDEO",
                 BRIGHTNESS_GUID,
                 str(percent),
             ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=no_window,
-        )
-    subprocess.run(
-        ["powercfg", "/S", "SCHEME_CURRENT"],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=no_window,
-    )
+        ),
+        (
+            "battery brightness",
+            [
+                "powercfg",
+                "/SETDCVALUEINDEX",
+                "SCHEME_CURRENT",
+                "SUB_VIDEO",
+                BRIGHTNESS_GUID,
+                str(percent),
+            ],
+        ),
+        ("power scheme refresh", ["powercfg", "/S", "SCHEME_CURRENT"]),
+    ]
 
-def ramp_brightness(start: int, end: int, cancel_check=None) -> None:
+    for operation, command in commands:
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                creationflags=no_window,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("Windows powercfg command was not found.") from exc
+        except subprocess.CalledProcessError as exc:
+            diagnostic = (exc.stderr or exc.stdout or "").strip()
+            detail = f": {diagnostic}" if diagnostic else ""
+            logging.error(
+                "powercfg failed during %s: returncode=%s stderr=%r stdout=%r",
+                operation,
+                exc.returncode,
+                exc.stderr,
+                exc.stdout,
+            )
+            raise RuntimeError(
+                f"Windows brightness control failed during {operation}{detail}"
+            ) from exc
+
+def ramp_brightness(start: int, end: int, cancel_check=None) -> bool:
     """
     Smoothly move brightness from start to end.
     cancel_check is an optional callable. If it returns True,
     the ramp is cancelled.
+    Returns True when the end target was reached, or False when cancelled.
     """
     if start == end:
-        return
+        return True
     step = 2 if end > start else -2
     value = start
     while (step > 0 and value < end) or (step < 0 and value > end):
         if cancel_check is not None and cancel_check():
-            return
+            return False
         value += step
         value = max(10, min(100, value))
         if (step > 0 and value > end) or (step < 0 and value < end):
             value = end
         set_brightness(value)
         time.sleep(0.12)
+    return True
 
 def ambient_value(frame) -> float:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -77,29 +109,61 @@ def value_to_brightness(value: float) -> int:
     # Reduce target brightness by 20% to prevent eye strain
     return round((15 + normalized * 55) * 0.8)
 
-def sample_camera(index: int) -> float | None:
-    camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    if not camera.isOpened():
-        return None
+def _valid_capture_frame(frame) -> bool:
     try:
+        shape = getattr(frame, "shape", None)
+        if shape is None or len(shape) < 2:
+            return False
+        if any(int(dimension) <= 0 for dimension in shape[:2]):
+            return False
+        return int(getattr(frame, "size", 0)) > 0
+    except (TypeError, ValueError):
+        return False
+
+def sample_camera(index: int) -> float | None:
+    camera = None
+    try:
+        camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not camera.isOpened():
+            logging.warning("Camera %s could not be opened", index)
+            return None
+
         # Warm up the camera so auto-exposure settles.
         for _ in range(8):
-            camera.read()
+            try:
+                camera.read()
+            except Exception:
+                logging.warning("Camera %s failed during warm-up", index, exc_info=True)
             time.sleep(0.08)
+
         samples = []
-        for _ in range(3):
-            ok, frame = camera.read()
-            if ok and frame is not None:
-                value = ambient_value(frame)
-                if value > 1.0:
-                    samples.append(value)
+        for _ in range(MEASUREMENT_SAMPLE_COUNT):
+            try:
+                ok, frame = camera.read()
+                if ok and _valid_capture_frame(frame):
+                    value = ambient_value(frame)
+                    if value > 1.0:
+                        samples.append(value)
+                else:
+                    logging.warning("Camera %s returned an invalid frame", index)
+            except Exception:
+                logging.warning("Camera %s failed during sampling", index, exc_info=True)
             time.sleep(0.08)
+
         if len(samples) < 2:
+            logging.warning("Camera %s did not provide enough valid frames", index)
             return None
         samples.sort()
         return samples[len(samples) // 2]
+    except Exception:
+        logging.exception("Camera %s sampling failed", index)
+        return None
     finally:
-        camera.release()
+        if camera is not None:
+            try:
+                camera.release()
+            except Exception:
+                logging.warning("Camera %s failed to release", index, exc_info=True)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adaptive brightness controller")
@@ -108,6 +172,11 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=120.0) 
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+
+    if args.camera < 0:
+        parser.error("--camera must be a non-negative integer.")
+    if not math.isfinite(args.interval) or args.interval < 30.0:
+        parser.error("--interval must be a finite number of at least 30 seconds.")
     
     last_target = None
     while True:

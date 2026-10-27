@@ -13,12 +13,11 @@ A Windows 10/11 app that adjusts display brightness automatically using short we
 ### English
 
 1. Open the [Releases page](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases).
-2. Download `AdaptiveBrightnessWebcam-Windows.zip` or `AdaptiveBrightnessWebcam.exe`.
-3. If you downloaded the ZIP, extract it first.
-4. Double-click `AdaptiveBrightnessWebcam.exe`.
-5. Choose your camera and click **Test camera**, then click **Start automation**.
+2. Download `AdaptiveBrightnessWebcam.exe`.
+3. Double-click `AdaptiveBrightnessWebcam.exe`.
+4. Choose your camera and click **Test camera**, then click **Start automation**.
 
-No Python installation is required. The ZIP version is portable; it does not need an installer.
+No Python installation is required. The executable is portable and does not need an installer.
 
 ### فارسی
 
