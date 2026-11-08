@@ -4,128 +4,274 @@
   <img src="assets/adaptive-brightness-poster.png" alt="Adaptive Brightness Webcam — automatic Windows brightness adjustment using your webcam" width="100%">
 </p>
 
-A Windows 10/11 app that adjusts display brightness automatically using short webcam light samples.
+**Adaptive Brightness Webcam** is a Windows 10/11 desktop application that uses short webcam samples to estimate ambient light and adjust the brightness of the active display automatically. It is designed to keep indoor brightness comfortable while still responding to major changes such as daylight, lights turning on, or sunset.
 
-یک برنامه برای ویندوز ۱۰ و ۱۱ که با نمونه‌برداری کوتاه از نور محیط توسط وب‌کم، روشنایی نمایشگر را به‌صورت خودکار تنظیم می‌کند.
+**Adaptive Brightness Webcam** یک برنامه دسکتاپ برای ویندوز ۱۰ و ۱۱ است که با نمونه‌برداری کوتاه از تصویر وب‌کم، نور محیط را تخمین می‌زند و روشنایی نمایشگر فعال را به‌صورت خودکار تنظیم می‌کند. هدف برنامه حفظ روشنایی مناسب در محیط‌های داخلی و واکنش صحیح به تغییرات بزرگ مانند روشن شدن چراغ‌ها، تغییر نور روز و غروب آفتاب است.
 
-## For regular users | برای کاربران عادی
+## What it does | قابلیت‌های اصلی
+
+- Samples the webcam briefly instead of keeping it continuously active.
+- Estimates luminance from the center 80% of the frame using robust percentiles rather than a single average.
+- Compensates for supported DirectShow exposure changes so camera auto-exposure is less likely to distort the result.
+- Converts the measurement into a comfortable display-brightness target using a configurable power curve.
+- Uses scene context, highlight ratio, lower-quartile darkness, smoothing, a deadband, and hysteresis to reduce flicker and noisy changes.
+- Applies large brightness changes gradually instead of jumping abruptly.
+- Shows the latest ambient-light estimate, target brightness, progress, and update time in the app.
+- Supports multiple camera indices and a one-click camera test.
+- Offers configurable check intervals, with presets for **120**, **300**, and **600** seconds; custom values must be at least **30 seconds**.
+- Delays checks further while the laptop is running on battery to reduce webcam wakeups and power usage.
+- Can follow the Windows theme or switch automatically between a light and dark appearance based on day/night.
+- Can launch with Windows and continue running from the system tray.
+- Stores no camera frames and uploads no images or videos.
+
+## For regular users | راهنمای کاربران عادی
 
 ### English
 
 1. Open the [Releases page](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases).
-2. Download `AdaptiveBrightnessWebcam.exe`.
-3. Double-click `AdaptiveBrightnessWebcam.exe`.
-4. Choose your camera and click **Test camera**, then click **Start automation**.
+2. Download `AdaptiveBrightnessWebcam.exe` for the standalone executable, or `AdaptiveBrightnessWebcam-Windows.zip` for the portable package.
+3. If you downloaded the ZIP file, extract it to a folder you can access.
+4. Run `AdaptiveBrightnessWebcam.exe`.
+5. In **Settings**, choose the correct camera index. `Camera 0` is usually the built-in webcam.
+6. Click **Test camera** and confirm that a light value and target brightness are reported.
+7. Choose the check interval, then click **Start automation**.
 
-No Python installation is required. The executable is portable and does not need an installer.
+Python is not required for the packaged Windows executable. The portable release does not need an installer or administrator privileges. To stop automation, click **Stop**. If **Close to tray** is enabled, closing the window hides the app while it continues running in the system tray; use the tray menu to show the window, toggle automation, or quit.
 
 ### فارسی
 
 ۱. وارد [صفحه Releases](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases) شوید.
-۲. فایل `AdaptiveBrightnessWebcam-Windows.zip` یا `AdaptiveBrightnessWebcam.exe` را دانلود کنید.
-۳. اگر فایل ZIP را دانلود کردید، ابتدا آن را Extract کنید.
-۴. روی فایل `AdaptiveBrightnessWebcam.exe` دوبار کلیک کنید.
-۵. دوربین را انتخاب کنید، روی **Test camera** و سپس روی **Start automation** کلیک کنید.
+۲. برای دریافت فایل مستقل، `AdaptiveBrightnessWebcam.exe` و برای نسخه قابل‌حمل، `AdaptiveBrightnessWebcam-Windows.zip` را دانلود کنید.
+۳. اگر فایل ZIP را دانلود کردید، آن را در یک پوشه استخراج کنید.
+۴. فایل `AdaptiveBrightnessWebcam.exe` را اجرا کنید.
+۵. در بخش **Settings** شماره دوربین درست را انتخاب کنید. در بیشتر لپ‌تاپ‌ها، وب‌کم داخلی `Camera 0` است.
+۶. روی **Test camera** کلیک کنید و مطمئن شوید که مقدار نور و روشنایی هدف نمایش داده می‌شود.
+۷. فاصله نمونه‌برداری را انتخاب کنید و روی **Start automation** کلیک کنید.
 
-برای اجرای برنامه نیازی به نصب Python نیست. نسخه ZIP قابل‌حمل است و به نصب‌کننده نیاز ندارد.
+برای اجرای نسخه بسته‌بندی‌شده ویندوز نیازی به نصب Python نیست. نسخه قابل‌حمل به نصب‌کننده یا دسترسی Administrator نیاز ندارد. برای توقف خودکارسازی روی **Stop** کلیک کنید. اگر گزینه **Close to tray** فعال باشد، بستن پنجره فقط آن را مخفی می‌کند و برنامه در System Tray به کار خود ادامه می‌دهد؛ از منوی Tray می‌توانید پنجره را باز کنید، خودکارسازی را روشن یا خاموش کنید، یا برنامه را کاملاً ببندید.
 
-## Features | امکانات
+## Settings | تنظیمات
 
-- Modern Windows 11-style interface | رابط کاربری مدرن با سبک Windows 11
-- Automatic light and dark theme | حالت روشن و تاریک خودکار
-- System tray controls | کنترل از System Tray
-- Optional launch with Windows | اجرای اختیاری همراه با ورود به ویندوز
-- No images or videos are stored or uploaded | هیچ تصویر یا ویدئویی ذخیره یا آپلود نمی‌شود
+| Setting | English | فارسی |
+|---|---|---|
+| Camera | Select the webcam index used for sampling. | انتخاب شماره وب‌کم برای نمونه‌برداری |
+| Check interval | Set the delay between samples. The minimum is 30 seconds. | تعیین فاصله بین نمونه‌برداری‌ها؛ حداقل ۳۰ ثانیه |
+| Appearance | **Auto** follows day/night; **Windows** follows the system theme. | حالت **Auto** بر اساس روز و شب و حالت **Windows** بر اساس تم سیستم عمل می‌کند |
+| Launch with Windows | Starts the app when you sign in to Windows. | اجرای برنامه هنگام ورود به ویندوز |
+| Close to tray | Hides the window instead of exiting when it is closed. | مخفی کردن پنجره به‌جای خروج کامل از برنامه |
 
-## Privacy and limitations | حریم خصوصی و محدودیت‌ها
+When the laptop is on battery, the app increases the effective interval to reduce camera wakeups. The selected interval remains visible in Settings, while the actual wait is power-aware.
 
-The webcam is active only briefly during each sample. The camera privacy light may turn on. Brightness control works best with an internal laptop display; some external monitors do not support it.
+هنگام استفاده از باتری، برنامه برای کاهش دفعات فعال شدن وب‌کم فاصله واقعی بررسی‌ها را بیشتر می‌کند. مقدار انتخاب‌شده در Settings بدون تغییر باقی می‌ماند، اما زمان انتظار اجرا با وضعیت برق سازگار می‌شود.
 
-### Brightness calibration
+## How the measurement works | روش اندازه‌گیری
 
-The controller measures robust luminance percentiles from the center 80% of each
-webcam sample instead of using the mean HSV value alone. This reduces sensitivity
-to saturated highlights, dark edges, and scene composition. The capture backend's
-exposure, gain, and white-balance properties are recorded; when DirectShow
-reports a valid log-scale exposure value, relative exposure changes are compensated
-before the brightness curve is applied. Unsupported or ambiguous camera controls
-are left unchanged rather than guessed.
+Each check opens the selected camera, allows it to warm up briefly, captures five valid frames, and uses the median measurement. The camera is then released. The image is converted to luminance and the center 80% is analyzed, which reduces the effect of dark borders and objects near the edge of the frame.
 
-The corrected measurement is mapped through a configurable power curve rather
-than a linear scale. The default curve uses ambient values 8–240, display
-brightness 10–75%, and an exponent of 1.75; this intentionally keeps ordinary
-indoor light comfortable. For example, an ambient value near 139.6 maps to
-approximately 34%. A raw reading can be lower in a brighter room when the webcam
-changes exposure, so readings should be interpreted together with the capture
-properties rather than as physical lux values.
+The controller considers:
 
-The controller also retains scene context from the luminance distribution. A
-wide gap between the 50th and 90th percentiles, together with a small proportion
-of near-white pixels, indicates a brighter indoor scene even when the camera's
-single scalar value is similar to a darker scene. This scene boost is bounded
-and filtered with the same deadband, smoothing, and hysteresis rules; it is not
-a hardcoded mapping for any one room or reading. Each GUI sample logs the raw
-percentiles, scene spread, highlight ratio, filtered value, and final target so
-calibration can be checked against the actual camera backend.
+- `p25`, `p50`, `p75`, and `p90` luminance percentiles.
+- The spread between the median and the 90th percentile.
+- The ratio of near-white highlight pixels.
+- Supported DirectShow exposure and gain properties.
+- Whether a scene appears dim even when auto-exposure produces a larger raw value.
+- A bounded bright-scene boost for high-contrast indoor scenes.
 
-`BrightnessConfig` in `adaptive_brightness.py` contains the tuning points:
+The result passes through exposure calibration, a configurable power curve, temporal smoothing, an ambient deadband, and brightness hysteresis. Targets are sent to Windows through `powercfg`. A change of three or more brightness points is ramped gradually to avoid an abrupt visual transition.
 
-- Increase `brightness_max` to allow brighter output in daylight.
-- Increase `curve_exponent` to keep indoor brightness lower while preserving the
-  high-light response; decrease it for a more sensitive response.
-- Adjust `ambient_min` and `ambient_max` for a camera whose exposure range differs.
-- `ambient_deadband` ignores small camera fluctuations.
-- `smoothing_alpha` controls normal response speed; `sudden_change_alpha` controls
-  large transitions. `brightness_hysteresis` prevents one- or two-point flicker.
-- `scene_boost_max`, `scene_spread_start`, and `scene_spread_end` bound the
-  additional response for a high-contrast bright indoor scene.
-- `bright_scene_response` and `highlight_response_span` reduce that response
-  smoothly when the camera reports a bright, clipped scene; this prevents
-  highlight-heavy frames from being interpreted as unlimited room illumination.
-- The lower luminance quartile (`p25`) is retained as a darkness indicator.
-  When `p25` is below `dim_scene_lower_quartile` (default `110`) and the
-  median is below `dim_scene_median` (default `132`) and the
-  highlight ratio is below `dim_scene_highlight_ratio` (default `0.05`), the
-  controller treats the scene as dim rather than assuming that a larger
-  camera-derived scalar means a brighter room. `dim_scene_boost` (default
-  `60`) provides a bounded initial correction, while
-  `sunset_trend_penalty` (default `20` brightness-equivalent units) reduces
-  the target when successive dim-scene samples rise, as happens when a
-  webcam's auto-exposure response makes a room appear numerically brighter
-  while it is actually getting darker.
-- A median at or above the dim-scene threshold prevents a low-highlight,
-  adequately illuminated room from inheriting the dim-scene correction.
-  Exposure-calibrated measurements preserve `p25`, so this classification is
-  also available on the DirectShow path.
-- `illuminated_scene_median_start` and `illuminated_scene_median_end`
-  (defaults `130` and `137`) provide a smooth median-based confidence ramp
-  for adequately illuminated indoor scenes even when there are no clipped
-  highlights.
-- These sunset safeguards are stateful and only activate when the detailed
-  measurement includes `p25`; legacy scalar callers retain the normal
-  mapping.
+هر بررسی وب‌کم انتخاب‌شده را باز می‌کند، اجازه می‌دهد نوردهی آن برای مدت کوتاهی پایدار شود، پنج فریم معتبر می‌گیرد و از مقدار میانه استفاده می‌کند. سپس وب‌کم آزاد می‌شود. تصویر به روشنایی تبدیل می‌شود و ۸۰ درصد مرکزی آن بررسی می‌شود تا تأثیر لبه‌های تاریک یا اشیای کنار تصویر کمتر شود.
 
-The controller uses median sampling, an ambient deadband, adaptive temporal
-smoothing, and brightness hysteresis. Invalid or out-of-range camera values are
-ignored, and the webcam is still opened only for each short sample.
+کنترل‌کننده موارد زیر را در نظر می‌گیرد:
 
-وب‌کم فقط هنگام نمونه‌برداری و برای چند لحظه فعال می‌شود و ممکن است چراغ حریم خصوصی آن روشن شود. کنترل روشنایی روی نمایشگر داخلی لپ‌تاپ بهترین عملکرد را دارد و بعضی نمایشگرهای خارجی از آن پشتیبانی نمی‌کنند.
+- صدک‌های روشنایی `p25`، `p50`، `p75` و `p90`.
+- فاصله بین میانه و صدک ۹۰.
+- نسبت پیکسل‌های بسیار روشن یا نزدیک به سفید.
+- ویژگی‌های نوردهی و Gain در صورت گزارش شدن توسط DirectShow.
+- تشخیص صحنه کم‌نور، حتی زمانی که نوردهی خودکار وب‌کم مقدار خام بزرگ‌تری تولید می‌کند.
+- افزایش محدود روشنایی برای صحنه‌های داخلی پرکنتراست.
+
+نتیجه پس از کالیبراسیون نوردهی، منحنی توان قابل تنظیم، هموارسازی زمانی، Deadband و Hysteresis به ویندوز ارسال می‌شود. تغییرات سه واحدی یا بیشتر به‌صورت تدریجی اعمال می‌شوند تا روشنایی ناگهان تغییر نکند.
+
+## Calibration and tuning | کالیبراسیون و تنظیم دقیق
+
+The default configuration is intentionally conservative for ordinary indoor lighting:
+
+- Ambient range: `8`–`240`
+- Display brightness range: `10%`–`75%`
+- Curve exponent: `1.75`
+- Ambient deadband: `3`
+- Normal smoothing alpha: `0.35`
+- Sudden-change smoothing alpha: `0.8`
+- Brightness hysteresis: `2`
+
+For example, an ambient value around `139.6` maps to approximately `34%` with the default curve. These values are camera-derived luminance estimates, not physical lux measurements. The same room can produce different raw values with different cameras, framing, exposure, or white balance.
+
+The tuning points are defined in `BrightnessConfig` in `adaptive_brightness.py`. The most useful adjustments are:
+
+- `brightness_max`: raise this to allow brighter output in daylight.
+- `curve_exponent`: raise it to keep normal indoor brightness lower; lower it for a faster, more sensitive response.
+- `ambient_min` and `ambient_max`: adapt the input range to a camera with a different exposure response.
+- `ambient_deadband`, `smoothing_alpha`, `sudden_change_alpha`, and `brightness_hysteresis`: control stability versus response speed.
+- `scene_boost_max`, `scene_spread_start`, and `scene_spread_end`: control the bounded high-contrast scene boost.
+- `dim_scene_*`, `dim_scene_boost`, and `sunset_trend_penalty`: protect against auto-exposure behavior that can make a darkening room appear numerically brighter.
+
+For reliable results, keep the webcam uncovered and pointed toward the room rather than directly at a lamp or a bright window.
+
+مقادیر پیش‌فرض برای نور معمولی محیط داخلی عمداً محافظه‌کارانه انتخاب شده‌اند:
+
+- بازه نور محیط: `8` تا `240`
+- بازه روشنایی نمایشگر: `10%` تا `75%`
+- توان منحنی: `1.75`
+- Deadband نور محیط: `3`
+- ضریب هموارسازی معمولی: `0.35`
+- ضریب واکنش به تغییر ناگهانی: `0.8`
+- Hysteresis روشنایی: `2`
+
+برای نمونه، مقدار محیطی نزدیک به `139.6` با منحنی پیش‌فرض تقریباً به روشنایی `34%` تبدیل می‌شود. این اعداد تخمین روشنایی بر اساس دوربین هستند و واحد فیزیکی Lux محسوب نمی‌شوند. یک اتاق یکسان با دوربین، کادر، نوردهی یا White Balance متفاوت می‌تواند مقدار خام متفاوتی تولید کند.
+
+نقاط قابل تنظیم در `BrightnessConfig` فایل `adaptive_brightness.py` قرار دارند. مهم‌ترین گزینه‌ها:
+
+- `brightness_max`: برای امکان روشنایی بیشتر در نور روز افزایش دهید.
+- `curve_exponent`: برای پایین نگه داشتن روشنایی معمول داخل خانه افزایش دهید؛ برای واکنش حساس‌تر کاهش دهید.
+- `ambient_min` و `ambient_max`: برای دوربینی با رفتار نوردهی متفاوت تنظیم کنید.
+- `ambient_deadband`، `smoothing_alpha`، `sudden_change_alpha` و `brightness_hysteresis`: تعادل بین پایداری و سرعت واکنش را تعیین می‌کنند.
+- `scene_boost_max`، `scene_spread_start` و `scene_spread_end`: افزایش محدود مربوط به صحنه‌های پرکنتراست را کنترل می‌کنند.
+- گزینه‌های `dim_scene_*`، به‌همراه `dim_scene_boost` و `sunset_trend_penalty`: اثر نوردهی خودکار را در اتاقی که رو به تاریک شدن است کاهش می‌دهند.
+
+برای نتیجه بهتر، وب‌کم را نپوشانید و آن را به سمت فضای اتاق بگیرید؛ از قرار دادن مستقیم آن مقابل چراغ یا پنجره بسیار روشن خودداری کنید.
+
+## Privacy, compatibility, and limitations | حریم خصوصی، سازگاری و محدودیت‌ها
+
+- The webcam is active only during a short warm-up and sampling window. The privacy indicator may turn on during that time.
+- Frames are processed in memory and are not saved, uploaded, or transmitted by this application.
+- Diagnostic messages are written to `%USERPROFILE%\.adaptive-brightness-webcam.log`.
+- Brightness control uses Windows `powercfg` and works best with an internal laptop display.
+- Some external monitors, docks, virtual displays, or vendor-specific display drivers do not expose brightness controls through Windows and may not respond.
+- The app requires a working camera permission, a usable webcam index, and a Windows display that accepts the `powercfg` brightness commands.
+- If the camera cannot be opened, the app reports an error and waits for the next check rather than changing brightness based on invalid data.
+
+- وب‌کم فقط هنگام گرم شدن کوتاه و نمونه‌برداری فعال است و ممکن است چراغ حریم خصوصی در همان مدت روشن شود.
+- فریم‌ها در حافظه پردازش می‌شوند و توسط این برنامه ذخیره، آپلود یا منتقل نمی‌شوند.
+- پیام‌های تشخیصی در `%USERPROFILE%\.adaptive-brightness-webcam.log` نوشته می‌شوند.
+- کنترل روشنایی با `powercfg` ویندوز انجام می‌شود و روی نمایشگر داخلی لپ‌تاپ بهترین عملکرد را دارد.
+- بعضی نمایشگرهای خارجی، Dock، نمایشگرهای مجازی یا درایورهای اختصاصی کنترل روشنایی را از طریق ویندوز ارائه نمی‌کنند و ممکن است پاسخ ندهند.
+- برنامه به دسترسی فعال دوربین، شماره دوربین معتبر و نمایشگری نیاز دارد که فرمان‌های روشنایی `powercfg` را بپذیرد.
+- اگر دوربین باز نشود، برنامه خطا را گزارش می‌کند و تا بررسی بعدی صبر می‌کند؛ بر اساس داده نامعتبر روشنایی را تغییر نمی‌دهد.
+
+## Troubleshooting | رفع اشکال
+
+### The camera test fails | تست دوربین ناموفق است
+
+Try another camera index such as `1` or `2`, verify Windows camera permissions, and make sure another application is not exclusively using the webcam. The selected camera must be visible to OpenCV through the DirectShow backend.
+
+شماره دوربین دیگری مانند `1` یا `2` را امتحان کنید، مجوز دوربین در ویندوز را بررسی کنید و مطمئن شوید برنامه دیگری وب‌کم را به‌صورت انحصاری استفاده نمی‌کند. دوربین انتخاب‌شده باید از طریق Backend نوع DirectShow برای OpenCV قابل مشاهده باشد.
+
+### Brightness does not change | روشنایی تغییر نمی‌کند
+
+Check whether the active display supports Windows brightness control. Built-in laptop panels usually work best; many external monitors require their own hardware controls or vendor software. Check the log file for `powercfg` diagnostics.
+
+بررسی کنید که نمایشگر فعال از کنترل روشنایی ویندوز پشتیبانی کند. نمایشگر داخلی لپ‌تاپ معمولاً بهترین عملکرد را دارد؛ بسیاری از نمایشگرهای خارجی به کنترل سخت‌افزاری یا نرم‌افزار سازنده نیاز دارند. برای خطاهای `powercfg` فایل لاگ را بررسی کنید.
+
+### The response is too slow or too bright | واکنش کند یا روشنایی زیاد است
+
+Reduce the interval, adjust `curve_exponent` or `brightness_max` in `BrightnessConfig`, and verify that the webcam is facing the room rather than a bright light source. Keep in mind that battery mode intentionally adds delay.
+
+فاصله نمونه‌برداری را کم کنید، `curve_exponent` یا `brightness_max` را در `BrightnessConfig` تنظیم کنید و مطمئن شوید وب‌کم به سمت فضای اتاق است، نه منبع نور شدید. توجه کنید که حالت باتری عمداً تأخیر بیشتری ایجاد می‌کند.
 
 ## For developers | برای توسعه‌دهندگان
+
+### Requirements
+
+- Windows 10 or Windows 11 for camera capture and brightness control.
+- Python 3.10+ recommended.
+- A webcam supported by OpenCV.
+
+### Run from source
 
 ```powershell
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-To build the Windows executable:
+To run the controller without the graphical interface:
+
+```powershell
+python adaptive_brightness.py --camera 0 --interval 120
+```
+
+Use `--once` to take one sample and exit:
+
+```powershell
+python adaptive_brightness.py --camera 0 --once
+```
+
+The interval must be a finite value of at least 30 seconds, and the camera index must be non-negative.
+
+### Run tests
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+### Build the Windows executable
+
+```powershell
+.\build.ps1
+```
+
+The build script installs the dependencies, generates `app_icon.ico`, and creates:
+
+```text
+dist\AdaptiveBrightnessWebcam.exe
+```
+
+The GitHub Actions release workflow builds the executable when a `v*` tag is pushed and publishes both the executable and `AdaptiveBrightnessWebcam-Windows.zip`. The optional Inno Setup definition is in `installer.iss`.
+
+### ساخت از کد منبع
+
+برای نصب وابستگی‌ها و اجرای رابط گرافیکی:
+
+```powershell
+python -m pip install -r requirements.txt
+python app.py
+```
+
+برای اجرای موتور بدون رابط گرافیکی:
+
+```powershell
+python adaptive_brightness.py --camera 0 --interval 120
+```
+
+با گزینه `--once` فقط یک‌بار نمونه‌برداری کنید و خارج شوید:
+
+```powershell
+python adaptive_brightness.py --camera 0 --once
+```
+
+فاصله باید یک عدد محدود و حداقل ۳۰ ثانیه باشد و شماره دوربین نباید منفی باشد.
+
+برای اجرای تست‌ها:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
 
 برای ساخت فایل اجرایی ویندوز:
 
 ```powershell
-.\\build.ps1
+.\build.ps1
 ```
 
-The project is licensed under the MIT License.
+اسکریپت ساخت وابستگی‌ها را نصب می‌کند، فایل `app_icon.ico` را می‌سازد و فایل زیر را تولید می‌کند:
 
-این پروژه تحت مجوز MIT منتشر شده است.
+```text
+dist\AdaptiveBrightnessWebcam.exe
+```
+
+Workflow انتشار GitHub با Push شدن Tagهایی مانند `v1.0.0` فایل اجرایی را می‌سازد و هم فایل اجرایی و هم `AdaptiveBrightnessWebcam-Windows.zip` را منتشر می‌کند. تعریف اختیاری Inno Setup در فایل `installer.iss` قرار دارد.
+
+## License | مجوز
+
+This project is released under the [MIT License](LICENSE).
+
+این پروژه تحت مجوز [MIT](LICENSE) منتشر شده است.
