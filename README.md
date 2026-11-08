@@ -41,6 +41,28 @@ No Python installation is required. The executable is portable and does not need
 
 The webcam is active only briefly during each sample. The camera privacy light may turn on. Brightness control works best with an internal laptop display; some external monitors do not support it.
 
+### Brightness calibration
+
+The controller measures the median HSV value from the center 80% of each webcam
+sample. It maps that measurement through a configurable power curve rather than a
+linear scale. The default curve uses ambient values 8–240, display brightness
+10–75%, and an exponent of 1.75; this intentionally keeps ordinary indoor light
+comfortable. For example, an ambient value near 139.6 maps to approximately 34%.
+
+`BrightnessConfig` in `adaptive_brightness.py` contains the tuning points:
+
+- Increase `brightness_max` to allow brighter output in daylight.
+- Increase `curve_exponent` to keep indoor brightness lower while preserving the
+  high-light response; decrease it for a more sensitive response.
+- Adjust `ambient_min` and `ambient_max` for a camera whose exposure range differs.
+- `ambient_deadband` ignores small camera fluctuations.
+- `smoothing_alpha` controls normal response speed; `sudden_change_alpha` controls
+  large transitions. `brightness_hysteresis` prevents one- or two-point flicker.
+
+The controller uses median sampling, an ambient deadband, adaptive temporal
+smoothing, and brightness hysteresis. Invalid or out-of-range camera values are
+ignored, and the webcam is still opened only for each short sample.
+
 وب‌کم فقط هنگام نمونه‌برداری و برای چند لحظه فعال می‌شود و ممکن است چراغ حریم خصوصی آن روشن شود. کنترل روشنایی روی نمایشگر داخلی لپ‌تاپ بهترین عملکرد را دارد و بعضی نمایشگرهای خارجی از آن پشتیبانی نمی‌کنند.
 
 ## For developers | برای توسعه‌دهندگان

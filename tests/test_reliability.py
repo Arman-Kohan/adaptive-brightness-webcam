@@ -60,6 +60,46 @@ class BrightnessEngineTests(unittest.TestCase):
         self.assertEqual(stable_high, 140.0)
         self.assertLess(engine.value_to_brightness(stable_low), engine.value_to_brightness(stable_high))
 
+    def test_brightness_curve_targets_comfortable_indoor_level(self):
+        self.assertEqual(engine.value_to_brightness(139.6), 34)
+        self.assertLess(engine.value_to_brightness(139.6), 44)
+
+    def test_brightness_curve_is_monotonic_and_bounded(self):
+        values = [engine.value_to_brightness(value) for value in (0, 20, 60, 120, 180, 240, 255)]
+        self.assertEqual(values, sorted(values))
+        self.assertGreaterEqual(min(values), engine.DEFAULT_BRIGHTNESS_CONFIG.brightness_min)
+        self.assertLessEqual(max(values), engine.DEFAULT_BRIGHTNESS_CONFIG.brightness_max)
+
+    def test_controller_deadband_and_hysteresis_hold_small_changes(self):
+        controller = engine.BrightnessController()
+        first = controller.update(100.0)
+        self.assertEqual(first, engine.value_to_brightness(100.0))
+        self.assertEqual(controller.update(101.0), first)
+        self.assertEqual(controller.update(102.0), first)
+
+    def test_controller_smooths_normal_changes_and_reacts_to_large_changes(self):
+        controller = engine.BrightnessController()
+        controller.update(40.0)
+        normal = controller.update(80.0)
+        self.assertEqual(controller.filtered_ambient, 54.0)
+        self.assertEqual(engine.value_to_brightness(54.0), 14)
+        self.assertEqual(normal, 12)
+        self.assertLessEqual(
+            abs(engine.value_to_brightness(54.0) - normal),
+            engine.DEFAULT_BRIGHTNESS_CONFIG.brightness_hysteresis,
+        )
+
+        sudden = controller.update(240.0)
+        self.assertEqual(controller.filtered_ambient, 202.8)
+        self.assertEqual(sudden, engine.value_to_brightness(202.8))
+
+    def test_controller_ignores_invalid_measurements(self):
+        controller = engine.BrightnessController()
+        self.assertIsNone(controller.update(float("nan")))
+        self.assertIsNone(controller.update(float("inf")))
+        self.assertIsNone(controller.update(-1.0))
+        self.assertIsNone(controller.update(256.0))
+
     def test_sample_camera_uses_median_for_noisy_measurements(self):
         measurements = iter([45.0, 130.0, 52.0, 49.0, 180.0])
         frames = [(True, self.ValidFrame()) for _ in range(8 + engine.MEASUREMENT_SAMPLE_COUNT)]
@@ -229,7 +269,11 @@ class WorkerLifecycleTests(unittest.TestCase):
             return target
 
         with mock.patch.object(app.engine, "sample_camera", side_effect=sample), \
-             mock.patch.object(app.engine, "value_to_brightness", side_effect=lambda value: value), \
+             mock.patch.object(
+                 app.engine,
+                 "BrightnessController",
+                 return_value=mock.Mock(update=lambda value: value),
+             ), \
              mock.patch.object(app.engine, "set_brightness") as set_brightness, \
              mock.patch.object(app.engine, "ramp_brightness") as ramp:
             owner.worker(0, 30.0, 1, owner.stop_event)
@@ -264,7 +308,11 @@ class WorkerLifecycleTests(unittest.TestCase):
             raise RuntimeError("brightness command failed")
 
         with mock.patch.object(app.engine, "sample_camera", side_effect=sample), \
-             mock.patch.object(app.engine, "value_to_brightness", side_effect=lambda value: value), \
+             mock.patch.object(
+                 app.engine,
+                 "BrightnessController",
+                 return_value=mock.Mock(update=lambda value: value),
+             ), \
              mock.patch.object(app.engine, "set_brightness") as set_brightness, \
              mock.patch.object(app.engine, "ramp_brightness", side_effect=fail_ramp):
             owner.worker(0, 30.0, 1, owner.stop_event)
@@ -287,7 +335,11 @@ class WorkerLifecycleTests(unittest.TestCase):
             return False
 
         with mock.patch.object(app.engine, "sample_camera", side_effect=sample), \
-             mock.patch.object(app.engine, "value_to_brightness", side_effect=lambda value: value), \
+             mock.patch.object(
+                 app.engine,
+                 "BrightnessController",
+                 return_value=mock.Mock(update=lambda value: value),
+             ), \
              mock.patch.object(app.engine, "set_brightness") as set_brightness, \
              mock.patch.object(app.engine, "ramp_brightness", side_effect=cancel_ramp) as ramp:
             owner.worker(0, 30.0, 1, owner.stop_event)
