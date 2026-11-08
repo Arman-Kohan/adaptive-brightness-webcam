@@ -1,6 +1,6 @@
 [Setup]
 AppName=Adaptive Brightness Webcam
-AppVersion=1.0.0
+AppVersion=1.0.8
 DefaultDirName={autopf}\Adaptive Brightness Webcam
 DefaultGroupName=Adaptive Brightness Webcam
 OutputDir=dist\installer

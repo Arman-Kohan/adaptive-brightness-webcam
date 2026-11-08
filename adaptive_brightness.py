@@ -5,7 +5,9 @@ import logging
 import math
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
+
 import cv2
 
 BRIGHTNESS_GUID = "aded5e82-b909-4619-9949-f5d71dac0bcb"
@@ -17,6 +19,34 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
+
+
+@dataclass(frozen=True)
+class BrightnessConfig:
+    """Calibration and comfort settings for the ambient-light controller."""
+
+    ambient_min: float = 8.0
+    ambient_max: float = 240.0
+    brightness_min: int = 10
+    brightness_max: int = 75
+    curve_exponent: float = 1.75
+    ambient_deadband: float = 3.0
+    smoothing_alpha: float = 0.35
+    sudden_change_alpha: float = 0.8
+    sudden_change_threshold: float = 45.0
+    brightness_hysteresis: int = 2
+
+
+DEFAULT_BRIGHTNESS_CONFIG = BrightnessConfig()
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _validate_ambient(value: float) -> bool:
+    return math.isfinite(value) and 0.0 <= value <= 255.0
+
 
 def set_brightness(percent: int) -> None:
     percent = max(10, min(100, int(percent)))
@@ -103,11 +133,69 @@ def ambient_value(frame) -> float:
     ]
     return float(cv2.mean(crop)[2])
 
-def value_to_brightness(value: float) -> int:
-    low, high = 20.0, 185.0
-    normalized = max(0.0, min(1.0, (value - low) / (high - low)))
-    # Reduce target brightness by 20% to prevent eye strain
-    return round((15 + normalized * 55) * 0.8)
+
+def value_to_brightness(
+    value: float,
+    config: BrightnessConfig = DEFAULT_BRIGHTNESS_CONFIG,
+) -> int:
+    """Map camera value to comfortable display brightness using a power curve."""
+    if not _validate_ambient(value):
+        raise ValueError(f"ambient value must be finite and in [0, 255], got {value!r}")
+    if config.ambient_max <= config.ambient_min:
+        raise ValueError("ambient_max must be greater than ambient_min")
+    if config.brightness_max < config.brightness_min:
+        raise ValueError("brightness_max must be at least brightness_min")
+    if config.curve_exponent <= 0.0 or not math.isfinite(config.curve_exponent):
+        raise ValueError("curve_exponent must be a positive finite number")
+
+    normalized = _clamp(
+        (value - config.ambient_min)
+        / (config.ambient_max - config.ambient_min),
+        0.0,
+        1.0,
+    )
+    curved = normalized**config.curve_exponent
+    brightness = config.brightness_min + (
+        curved * (config.brightness_max - config.brightness_min)
+    )
+    return int(round(_clamp(brightness, config.brightness_min, config.brightness_max)))
+
+
+class BrightnessController:
+    """Stateful filtering and hysteresis around the configurable brightness curve."""
+
+    def __init__(self, config: BrightnessConfig = DEFAULT_BRIGHTNESS_CONFIG):
+        self.config = config
+        self.filtered_ambient: float | None = None
+        self.target_brightness: int | None = None
+
+    def update(self, value: float) -> int | None:
+        if not _validate_ambient(value):
+            logging.warning("Ignoring invalid ambient value: %r", value)
+            return self.target_brightness
+
+        if self.filtered_ambient is None:
+            self.filtered_ambient = value
+        else:
+            delta = value - self.filtered_ambient
+            if abs(delta) >= self.config.ambient_deadband:
+                alpha = (
+                    self.config.sudden_change_alpha
+                    if abs(delta) >= self.config.sudden_change_threshold
+                    else self.config.smoothing_alpha
+                )
+                self.filtered_ambient += alpha * delta
+
+        proposed = value_to_brightness(self.filtered_ambient, self.config)
+        if (
+            self.target_brightness is not None
+            and abs(proposed - self.target_brightness)
+            <= self.config.brightness_hysteresis
+        ):
+            return self.target_brightness
+
+        self.target_brightness = proposed
+        return proposed
 
 def _valid_capture_frame(frame) -> bool:
     try:
@@ -178,13 +266,20 @@ def main() -> None:
     if not math.isfinite(args.interval) or args.interval < 30.0:
         parser.error("--interval must be a finite number of at least 30 seconds.")
     
+    controller = BrightnessController()
     last_target = None
     while True:
         value = sample_camera(args.camera)
         if value is None:
             logging.warning("Camera sample unavailable")
         else:
-            target = value_to_brightness(value)
+            target = controller.update(value)
+            if target is None:
+                logging.warning("Ambient value did not produce a brightness target")
+                if args.once:
+                    return
+                time.sleep(args.interval)
+                continue
             logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
             if last_target is None or abs(target - last_target) >= 3:
                 try:

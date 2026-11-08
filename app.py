@@ -1421,6 +1421,7 @@ class BrightnessApp(ctk.CTk):
             self.start()
 
     def worker(self, camera, interval, generation, worker_stop_event):
+        controller = engine.BrightnessController()
         last_measured_target = None
         last_commanded_target = None
 
@@ -1432,7 +1433,20 @@ class BrightnessApp(ctk.CTk):
                 if value is None:
                     self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
                 else:
-                    target = engine.value_to_brightness(value)
+                    target = controller.update(value)
+                    if target is None:
+                        self.events.put(
+                            (
+                                "status",
+                                (
+                                    "Invalid camera reading",
+                                    "Waiting for next check",
+                                    "warning",
+                                ),
+                            )
+                        )
+                        worker_stop_event.wait(self.power_aware_interval(interval))
+                        continue
                     last_measured_target = target
 
                     if not worker_stop_event.is_set() and generation == self.worker_generation:
