@@ -59,6 +59,15 @@ approximately 34%. A raw reading can be lower in a brighter room when the webcam
 changes exposure, so readings should be interpreted together with the capture
 properties rather than as physical lux values.
 
+The controller also retains scene context from the luminance distribution. A
+wide gap between the 50th and 90th percentiles, together with a small proportion
+of near-white pixels, indicates a brighter indoor scene even when the camera's
+single scalar value is similar to a darker scene. This scene boost is bounded
+and filtered with the same deadband, smoothing, and hysteresis rules; it is not
+a hardcoded mapping for any one room or reading. Each GUI sample logs the raw
+percentiles, scene spread, highlight ratio, filtered value, and final target so
+calibration can be checked against the actual camera backend.
+
 `BrightnessConfig` in `adaptive_brightness.py` contains the tuning points:
 
 - Increase `brightness_max` to allow brighter output in daylight.
@@ -68,6 +77,33 @@ properties rather than as physical lux values.
 - `ambient_deadband` ignores small camera fluctuations.
 - `smoothing_alpha` controls normal response speed; `sudden_change_alpha` controls
   large transitions. `brightness_hysteresis` prevents one- or two-point flicker.
+- `scene_boost_max`, `scene_spread_start`, and `scene_spread_end` bound the
+  additional response for a high-contrast bright indoor scene.
+- `bright_scene_response` and `highlight_response_span` reduce that response
+  smoothly when the camera reports a bright, clipped scene; this prevents
+  highlight-heavy frames from being interpreted as unlimited room illumination.
+- The lower luminance quartile (`p25`) is retained as a darkness indicator.
+  When `p25` is below `dim_scene_lower_quartile` (default `110`) and the
+  median is below `dim_scene_median` (default `132`) and the
+  highlight ratio is below `dim_scene_highlight_ratio` (default `0.05`), the
+  controller treats the scene as dim rather than assuming that a larger
+  camera-derived scalar means a brighter room. `dim_scene_boost` (default
+  `60`) provides a bounded initial correction, while
+  `sunset_trend_penalty` (default `20` brightness-equivalent units) reduces
+  the target when successive dim-scene samples rise, as happens when a
+  webcam's auto-exposure response makes a room appear numerically brighter
+  while it is actually getting darker.
+- A median at or above the dim-scene threshold prevents a low-highlight,
+  adequately illuminated room from inheriting the dim-scene correction.
+  Exposure-calibrated measurements preserve `p25`, so this classification is
+  also available on the DirectShow path.
+- `illuminated_scene_median_start` and `illuminated_scene_median_end`
+  (defaults `130` and `137`) provide a smooth median-based confidence ramp
+  for adequately illuminated indoor scenes even when there are no clipped
+  highlights.
+- These sunset safeguards are stateful and only activate when the detailed
+  measurement includes `p25`; legacy scalar callers retain the normal
+  mapping.
 
 The controller uses median sampling, an ambient deadband, adaptive temporal
 smoothing, and brightness hysteresis. Invalid or out-of-range camera values are

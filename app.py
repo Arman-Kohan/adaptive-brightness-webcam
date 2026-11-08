@@ -1429,7 +1429,11 @@ class BrightnessApp(ctk.CTk):
         while not worker_stop_event.is_set() and generation == self.worker_generation:
             try:
                 with self.camera_lock:
-                    value = engine.sample_camera(camera, calibration=calibration)
+                    value = engine.sample_camera(
+                        camera,
+                        calibration=calibration,
+                        detailed=True,
+                    )
 
                 if value is None:
                     self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
@@ -1467,7 +1471,23 @@ class BrightnessApp(ctk.CTk):
                                         last_commanded_target = target
 
                         if not worker_stop_event.is_set() and generation == self.worker_generation:
-                            self.events.put(("reading", (value, last_measured_target)))
+                            display_value = (
+                                value.value
+                                if isinstance(value, engine.AmbientMeasurement)
+                                else value
+                            )
+                            logging.info(
+                                "controller: raw=%.1f effective=%s filtered=%s target=%s "
+                                "dim=%s scene_boost=%s trend_penalty=%s",
+                                display_value,
+                                controller.last_effective_ambient,
+                                controller.filtered_ambient,
+                                last_measured_target,
+                                controller.last_dim_scene,
+                                controller.last_scene_boost,
+                                controller.last_trend_penalty,
+                            )
+                            self.events.put(("reading", (display_value, last_measured_target)))
 
             except Exception as exc:
                 logging.exception("Brightness update failed")
