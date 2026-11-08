@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 import adaptive_brightness as engine
+import numpy as np
 
 
 class BrightnessEngineTests(unittest.TestCase):
@@ -30,6 +31,31 @@ class BrightnessEngineTests(unittest.TestCase):
                 self.released = True
 
         return FakeCamera()
+
+    def test_luminance_metric_tracks_scene_illumination(self):
+        dark_frame = np.full((100, 100, 3), 80, dtype=np.uint8)
+        bright_frame = np.full((100, 100, 3), 210, dtype=np.uint8)
+
+        self.assertLess(
+            engine.ambient_value(dark_frame),
+            engine.ambient_value(bright_frame),
+        )
+
+    def test_environment_observations_use_exposure_aware_calibration(self):
+        calibration = engine.ExposureCalibration()
+        dark_room = calibration.adjust(
+            139.6,
+            engine.CameraProperties(exposure=-8.0, gain=12.0),
+        )
+        bright_room = calibration.adjust(
+            125.4,
+            engine.CameraProperties(exposure=-8.8, gain=28.0),
+        )
+
+        self.assertEqual(engine.value_to_brightness(dark_room), 34)
+        self.assertGreater(bright_room, dark_room)
+        self.assertGreaterEqual(engine.value_to_brightness(bright_room), 60)
+        self.assertLessEqual(engine.value_to_brightness(bright_room), 70)
 
     def test_sample_camera_uses_five_measurements_and_median(self):
         frames = [(True, self.ValidFrame()) for _ in range(13)]

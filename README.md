@@ -43,11 +43,21 @@ The webcam is active only briefly during each sample. The camera privacy light m
 
 ### Brightness calibration
 
-The controller measures the median HSV value from the center 80% of each webcam
-sample. It maps that measurement through a configurable power curve rather than a
-linear scale. The default curve uses ambient values 8–240, display brightness
-10–75%, and an exponent of 1.75; this intentionally keeps ordinary indoor light
-comfortable. For example, an ambient value near 139.6 maps to approximately 34%.
+The controller measures robust luminance percentiles from the center 80% of each
+webcam sample instead of using the mean HSV value alone. This reduces sensitivity
+to saturated highlights, dark edges, and scene composition. The capture backend's
+exposure, gain, and white-balance properties are recorded; when DirectShow
+reports a valid log-scale exposure value, relative exposure changes are compensated
+before the brightness curve is applied. Unsupported or ambiguous camera controls
+are left unchanged rather than guessed.
+
+The corrected measurement is mapped through a configurable power curve rather
+than a linear scale. The default curve uses ambient values 8–240, display
+brightness 10–75%, and an exponent of 1.75; this intentionally keeps ordinary
+indoor light comfortable. For example, an ambient value near 139.6 maps to
+approximately 34%. A raw reading can be lower in a brighter room when the webcam
+changes exposure, so readings should be interpreted together with the capture
+properties rather than as physical lux values.
 
 `BrightnessConfig` in `adaptive_brightness.py` contains the tuning points:
 
