@@ -1422,13 +1422,14 @@ class BrightnessApp(ctk.CTk):
 
     def worker(self, camera, interval, generation, worker_stop_event):
         controller = engine.BrightnessController()
+        calibration = engine.ExposureCalibration()
         last_measured_target = None
         last_commanded_target = None
 
         while not worker_stop_event.is_set() and generation == self.worker_generation:
             try:
                 with self.camera_lock:
-                    value = engine.sample_camera(camera)
+                    value = engine.sample_camera(camera, calibration=calibration)
 
                 if value is None:
                     self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
@@ -1523,7 +1524,10 @@ class BrightnessApp(ctk.CTk):
     def _test_worker(self, camera):
         try:
             with self.camera_lock:
-                value = engine.sample_camera(camera)
+                value = engine.sample_camera(
+                    camera,
+                    calibration=engine.ExposureCalibration(),
+                )
 
             if value is None:
                 self.events.put(("test_error", "Camera not found. Check camera number and Windows permissions."))

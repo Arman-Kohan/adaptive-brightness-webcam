@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 BRIGHTNESS_GUID = "aded5e82-b909-4619-9949-f5d71dac0bcb"
 MEASUREMENT_SAMPLE_COUNT = 5
@@ -38,6 +39,35 @@ class BrightnessConfig:
 
 
 DEFAULT_BRIGHTNESS_CONFIG = BrightnessConfig()
+
+
+@dataclass(frozen=True)
+class CameraProperties:
+    """Best-effort camera controls reported by the active capture backend."""
+
+    auto_exposure: float | None = None
+    exposure: float | None = None
+    gain: float | None = None
+    auto_white_balance: float | None = None
+    white_balance: float | None = None
+
+
+class ExposureCalibration:
+    """Correct relative luminance for comparable DirectShow exposure changes."""
+
+    def __init__(self):
+        self.reference_exposure: float | None = None
+
+    def adjust(self, value: float, properties: CameraProperties) -> float:
+        exposure = properties.exposure
+        if exposure is None or not math.isfinite(exposure) or not -20.0 <= exposure <= 0.0:
+            return value
+
+        if self.reference_exposure is None:
+            self.reference_exposure = exposure
+        factor = 2.0 ** (self.reference_exposure - exposure)
+
+        return _clamp(value * factor, 0.0, 255.0)
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -125,13 +155,41 @@ def ramp_brightness(start: int, end: int, cancel_check=None) -> bool:
     return True
 
 def ambient_value(frame) -> float:
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    height, width = hsv.shape[:2]
-    crop = hsv[
+    """Estimate scene illumination from robust luminance percentiles."""
+    if not _valid_capture_frame(frame):
+        raise ValueError("frame is empty or invalid")
+
+    height, width = frame.shape[:2]
+    crop = frame[
         height // 10 : height * 9 // 10,
         width // 10 : width * 9 // 10,
     ]
-    return float(cv2.mean(crop)[2])
+    if len(crop.shape) == 2:
+        luminance = crop.astype(np.float32)
+    elif crop.shape[2] >= 3:
+        luminance = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    else:
+        raise ValueError("frame must have one grayscale or at least three color channels")
+    pixels = luminance.reshape(-1)
+    p50, p75, p90 = np.percentile(pixels, (50, 75, 90))
+    return float(0.55 * p50 + 0.30 * p75 + 0.15 * p90)
+
+
+def _camera_properties(camera) -> CameraProperties:
+    def read(property_id):
+        try:
+            value = float(camera.get(property_id))
+            return value if math.isfinite(value) else None
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    return CameraProperties(
+        auto_exposure=read(cv2.CAP_PROP_AUTO_EXPOSURE),
+        exposure=read(cv2.CAP_PROP_EXPOSURE),
+        gain=read(cv2.CAP_PROP_GAIN),
+        auto_white_balance=read(cv2.CAP_PROP_AUTO_WB),
+        white_balance=read(cv2.CAP_PROP_WB_TEMPERATURE),
+    )
 
 
 def value_to_brightness(
@@ -208,7 +266,10 @@ def _valid_capture_frame(frame) -> bool:
     except (TypeError, ValueError):
         return False
 
-def sample_camera(index: int) -> float | None:
+def sample_camera(
+    index: int,
+    calibration: ExposureCalibration | None = None,
+) -> float | None:
     camera = None
     try:
         camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
@@ -224,12 +285,26 @@ def sample_camera(index: int) -> float | None:
                 logging.warning("Camera %s failed during warm-up", index, exc_info=True)
             time.sleep(0.08)
 
+        properties = _camera_properties(camera)
+        logging.info(
+            "Camera %s properties: auto_exposure=%s exposure=%s gain=%s "
+            "auto_white_balance=%s white_balance=%s",
+            index,
+            properties.auto_exposure,
+            properties.exposure,
+            properties.gain,
+            properties.auto_white_balance,
+            properties.white_balance,
+        )
+
         samples = []
         for _ in range(MEASUREMENT_SAMPLE_COUNT):
             try:
                 ok, frame = camera.read()
                 if ok and _valid_capture_frame(frame):
                     value = ambient_value(frame)
+                    if calibration is not None:
+                        value = calibration.adjust(value, properties)
                     if value > 1.0:
                         samples.append(value)
                 else:
@@ -267,9 +342,10 @@ def main() -> None:
         parser.error("--interval must be a finite number of at least 30 seconds.")
     
     controller = BrightnessController()
+    calibration = ExposureCalibration()
     last_target = None
     while True:
-        value = sample_camera(args.camera)
+        value = sample_camera(args.camera, calibration)
         if value is None:
             logging.warning("Camera sample unavailable")
         else:
