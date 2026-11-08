@@ -1,131 +1,171 @@
 # Adaptive Brightness Webcam
 
 <p align="center">
-  <img src="assets/adaptive-brightness-poster.png" alt="Adaptive Brightness Webcam — automatic Windows brightness adjustment using your webcam" width="100%">
+  <img src="assets/adaptive-brightness-poster.png" alt="Adaptive Brightness Webcam" width="100%">
 </p>
 
-A Windows 10/11 app that adjusts display brightness automatically using short webcam light samples.
+<p align="center">
+  <strong>Comfortable screen brightness, automatically tuned to your room.</strong><br>
+  A lightweight Windows app that uses short webcam light samples to adjust display brightness.
+</p>
 
-یک برنامه برای ویندوز ۱۰ و ۱۱ که با نمونه‌برداری کوتاه از نور محیط توسط وب‌کم، روشنایی نمایشگر را به‌صورت خودکار تنظیم می‌کند.
+<p align="center">
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases"><img src="https://img.shields.io/github/v/release/Arman-Kohan/adaptive-brightness-webcam?display_name=tag&style=flat-square&color=0A6CFF" alt="Latest release"></a>
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/actions/workflows/build-check.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arman-Kohan/adaptive-brightness-webcam/build-check.yml?branch=main&style=flat-square&label=build" alt="Build status"></a>
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Arman-Kohan/adaptive-brightness-webcam?style=flat-square" alt="MIT License"></a>
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam"><img src="https://img.shields.io/github/stars/Arman-Kohan/adaptive-brightness-webcam?style=flat-square" alt="GitHub stars"></a>
+</p>
 
-## For regular users | برای کاربران عادی
+<p align="center">
+  <a href="README.fa.md">راهنمای فارسی</a>
+  ·
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases">Download</a>
+  ·
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/issues">Suggest an improvement</a>
+</p>
 
-### English
+## Why Adaptive Brightness Webcam?
 
-1. Open the [Releases page](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases).
-2. Download `AdaptiveBrightnessWebcam.exe`.
-3. Double-click `AdaptiveBrightnessWebcam.exe`.
-4. Choose your camera and click **Test camera**, then click **Start automation**.
+Most automatic brightness tools either depend on a dedicated light sensor or react too aggressively to noisy camera readings. This project takes a calmer approach: it samples the webcam briefly, analyzes the scene, filters unstable measurements, and changes brightness only when the result is meaningful.
 
-No Python installation is required. The executable is portable and does not need an installer.
+The result is a small, privacy-conscious utility that is especially useful on Windows laptops with built-in displays.
 
-### فارسی
+## Highlights
 
-۱. وارد [صفحه Releases](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases) شوید.
-۲. فایل `AdaptiveBrightnessWebcam-Windows.zip` یا `AdaptiveBrightnessWebcam.exe` را دانلود کنید.
-۳. اگر فایل ZIP را دانلود کردید، ابتدا آن را Extract کنید.
-۴. روی فایل `AdaptiveBrightnessWebcam.exe` دوبار کلیک کنید.
-۵. دوربین را انتخاب کنید، روی **Test camera** و سپس روی **Start automation** کلیک کنید.
+- **Automatic brightness control** based on short webcam samples.
+- **Privacy first:** frames are processed in memory; no images or videos are saved or uploaded.
+- **Stable transitions:** median sampling, exposure calibration, smoothing, deadband, hysteresis, and gradual brightness ramps reduce flicker.
+- **Scene-aware measurement:** analyzes the center 80% of the frame, luminance percentiles, contrast, highlights, and dim-scene behavior.
+- **Simple desktop UI:** test the camera, start or stop automation, and see the latest light estimate and target brightness.
+- **System tray support:** keep automation running quietly in the background.
+- **Windows startup option:** launch automatically when you sign in.
+- **Power-aware behavior:** checks are spaced out further on battery to reduce webcam wakeups.
+- **Light and dark appearance:** follow the Windows theme or switch automatically between day and night.
+- **Portable release:** download and run the Windows executable without installing Python.
 
-برای اجرای برنامه نیازی به نصب Python نیست. نسخه ZIP قابل‌حمل است و به نصب‌کننده نیاز ندارد.
+## Download and run
 
-## Features | امکانات
+1. Open the [latest Releases](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases).
+2. Download `AdaptiveBrightnessWebcam.exe`, or download `AdaptiveBrightnessWebcam-Windows.zip` for the portable package.
+3. Extract the ZIP if necessary and run `AdaptiveBrightnessWebcam.exe`.
+4. Choose the webcam index. `Camera 0` is usually the built-in webcam.
+5. Click **Test camera**, choose a check interval, and click **Start automation**.
 
-- Modern Windows 11-style interface | رابط کاربری مدرن با سبک Windows 11
-- Automatic light and dark theme | حالت روشن و تاریک خودکار
-- System tray controls | کنترل از System Tray
-- Optional launch with Windows | اجرای اختیاری همراه با ورود به ویندوز
-- No images or videos are stored or uploaded | هیچ تصویر یا ویدئویی ذخیره یا آپلود نمی‌شود
+No Python installation, administrator privileges, or installer is required for the packaged release.
 
-## Privacy and limitations | حریم خصوصی و محدودیت‌ها
+### Recommended first setup
 
-The webcam is active only briefly during each sample. The camera privacy light may turn on. Brightness control works best with an internal laptop display; some external monitors do not support it.
+For a comfortable starting point:
 
-### Brightness calibration
+- Keep the webcam uncovered and pointed toward the room.
+- Avoid pointing it directly at a lamp or a bright window.
+- Start with the default **120-second** interval.
+- Use **Test camera** before starting automation.
+- If you use an external monitor, verify that it supports Windows brightness control.
 
-The controller measures robust luminance percentiles from the center 80% of each
-webcam sample instead of using the mean HSV value alone. This reduces sensitivity
-to saturated highlights, dark edges, and scene composition. The capture backend's
-exposure, gain, and white-balance properties are recorded; when DirectShow
-reports a valid log-scale exposure value, relative exposure changes are compensated
-before the brightness curve is applied. Unsupported or ambiguous camera controls
-are left unchanged rather than guessed.
+## How it works
 
-The corrected measurement is mapped through a configurable power curve rather
-than a linear scale. The default curve uses ambient values 8–240, display
-brightness 10–75%, and an exponent of 1.75; this intentionally keeps ordinary
-indoor light comfortable. For example, an ambient value near 139.6 maps to
-approximately 34%. A raw reading can be lower in a brighter room when the webcam
-changes exposure, so readings should be interpreted together with the capture
-properties rather than as physical lux values.
+For each check, the app:
 
-The controller also retains scene context from the luminance distribution. A
-wide gap between the 50th and 90th percentiles, together with a small proportion
-of near-white pixels, indicates a brighter indoor scene even when the camera's
-single scalar value is similar to a darker scene. This scene boost is bounded
-and filtered with the same deadband, smoothing, and hysteresis rules; it is not
-a hardcoded mapping for any one room or reading. Each GUI sample logs the raw
-percentiles, scene spread, highlight ratio, filtered value, and final target so
-calibration can be checked against the actual camera backend.
+1. Opens the selected webcam through OpenCV and DirectShow.
+2. Lets the camera warm up briefly so auto-exposure can settle.
+3. Captures five valid samples and uses the median measurement.
+4. Analyzes the center 80% of the frame using luminance percentiles (`p25`, `p50`, `p75`, `p90`).
+5. Accounts for scene contrast, near-white highlights, supported exposure values, and dim-scene patterns.
+6. Maps the result through a configurable comfort curve.
+7. Applies smoothing and hysteresis to avoid flicker.
+8. Sends the target to Windows with `powercfg`; larger changes are ramped gradually.
+9. Releases the webcam immediately after sampling.
 
-`BrightnessConfig` in `adaptive_brightness.py` contains the tuning points:
+The displayed camera value is a relative, camera-derived luminance estimate—not a physical lux measurement. Different cameras, framing, exposure, and white balance can produce different values in the same room.
 
-- Increase `brightness_max` to allow brighter output in daylight.
-- Increase `curve_exponent` to keep indoor brightness lower while preserving the
-  high-light response; decrease it for a more sensitive response.
-- Adjust `ambient_min` and `ambient_max` for a camera whose exposure range differs.
-- `ambient_deadband` ignores small camera fluctuations.
-- `smoothing_alpha` controls normal response speed; `sudden_change_alpha` controls
-  large transitions. `brightness_hysteresis` prevents one- or two-point flicker.
-- `scene_boost_max`, `scene_spread_start`, and `scene_spread_end` bound the
-  additional response for a high-contrast bright indoor scene.
-- `bright_scene_response` and `highlight_response_span` reduce that response
-  smoothly when the camera reports a bright, clipped scene; this prevents
-  highlight-heavy frames from being interpreted as unlimited room illumination.
-- The lower luminance quartile (`p25`) is retained as a darkness indicator.
-  When `p25` is below `dim_scene_lower_quartile` (default `110`) and the
-  median is below `dim_scene_median` (default `132`) and the
-  highlight ratio is below `dim_scene_highlight_ratio` (default `0.05`), the
-  controller treats the scene as dim rather than assuming that a larger
-  camera-derived scalar means a brighter room. `dim_scene_boost` (default
-  `60`) provides a bounded initial correction, while
-  `sunset_trend_penalty` (default `20` brightness-equivalent units) reduces
-  the target when successive dim-scene samples rise, as happens when a
-  webcam's auto-exposure response makes a room appear numerically brighter
-  while it is actually getting darker.
-- A median at or above the dim-scene threshold prevents a low-highlight,
-  adequately illuminated room from inheriting the dim-scene correction.
-  Exposure-calibrated measurements preserve `p25`, so this classification is
-  also available on the DirectShow path.
-- `illuminated_scene_median_start` and `illuminated_scene_median_end`
-  (defaults `130` and `137`) provide a smooth median-based confidence ramp
-  for adequately illuminated indoor scenes even when there are no clipped
-  highlights.
-- These sunset safeguards are stateful and only activate when the detailed
-  measurement includes `p25`; legacy scalar callers retain the normal
-  mapping.
+## Settings
 
-The controller uses median sampling, an ambient deadband, adaptive temporal
-smoothing, and brightness hysteresis. Invalid or out-of-range camera values are
-ignored, and the webcam is still opened only for each short sample.
+| Setting | What it does |
+|---|---|
+| **Camera** | Selects the webcam index used for sampling. |
+| **Check interval** | Controls how often the room is measured. Minimum: 30 seconds. Presets: 120, 300, and 600 seconds. |
+| **Appearance** | **Auto** follows day/night; **Windows** follows the system theme. |
+| **Launch with Windows** | Starts the app automatically when you sign in. |
+| **Close to tray** | Hides the window while leaving the app running in the system tray. |
 
-وب‌کم فقط هنگام نمونه‌برداری و برای چند لحظه فعال می‌شود و ممکن است چراغ حریم خصوصی آن روشن شود. کنترل روشنایی روی نمایشگر داخلی لپ‌تاپ بهترین عملکرد را دارد و بعضی نمایشگرهای خارجی از آن پشتیبانی نمی‌کنند.
+When running on battery, the app automatically increases the effective wait between checks. This reduces power use and unnecessary camera wakeups.
 
-## For developers | برای توسعه‌دهندگان
+## Privacy and compatibility
+
+- The webcam is active only during a short warm-up and sampling window. The camera privacy indicator may turn on during that time.
+- Frames are processed in memory and are not saved, uploaded, or transmitted by this application.
+- Diagnostic logs are written to `%USERPROFILE%\.adaptive-brightness-webcam.log`.
+- Brightness control works best with internal laptop displays.
+- Some external monitors, docks, virtual displays, and vendor-specific drivers do not expose brightness control through Windows.
+- The app requires Windows 10/11, a camera permission, a valid webcam index, and a display that accepts the Windows `powercfg` brightness commands.
+
+## Troubleshooting
+
+### The camera test fails
+
+Try camera index `1` or `2`, check Windows camera permissions, and close other apps that may be using the webcam. The selected camera must be available through the DirectShow backend.
+
+### Brightness does not change
+
+Many external monitors do not accept software brightness commands from Windows. Check the display's hardware controls or vendor software, then inspect `%USERPROFILE%\.adaptive-brightness-webcam.log` for `powercfg` errors.
+
+### The response is too slow or too bright
+
+Reduce the interval, make sure the camera is facing the room, and adjust `BrightnessConfig` in `adaptive_brightness.py`. Battery mode intentionally adds extra delay.
+
+## For developers
+
+### Requirements
+
+- Windows 10 or Windows 11
+- Python 3.10+ recommended
+- A webcam supported by OpenCV
+
+### Run from source
 
 ```powershell
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-To build the Windows executable:
-
-برای ساخت فایل اجرایی ویندوز:
+Run the controller without the graphical interface:
 
 ```powershell
-.\\build.ps1
+python adaptive_brightness.py --camera 0 --interval 120
 ```
 
-The project is licensed under the MIT License.
+Take one sample and exit:
 
-این پروژه تحت مجوز MIT منتشر شده است.
+```powershell
+python adaptive_brightness.py --camera 0 --once
+```
+
+Run the tests:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+Build the Windows executable:
+
+```powershell
+.\build.ps1
+```
+
+The build produces `dist\AdaptiveBrightnessWebcam.exe`. The release workflow packages the executable and portable ZIP whenever a `v*` tag is pushed.
+
+## Contributing and feedback
+
+Found a bug, have a calibration idea, or want support for another display or camera setup? Please [open an issue](https://github.com/Arman-Kohan/adaptive-brightness-webcam/issues) with:
+
+- Windows version and display type
+- Camera model or camera index
+- What you expected and what happened
+- Relevant log output, with any private information removed
+
+If this project is useful to you, consider leaving a **star** on GitHub. It helps the project become more visible and motivates future improvements.
+
+## License
+
+Released under the [MIT License](LICENSE).
