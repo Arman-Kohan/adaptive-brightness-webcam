@@ -57,12 +57,140 @@ class BrightnessEngineTests(unittest.TestCase):
         self.assertGreaterEqual(engine.value_to_brightness(bright_room), 60)
         self.assertLessEqual(engine.value_to_brightness(bright_room), 70)
 
+    def test_environment_observations_use_scene_context_without_changing_dark_anchor(self):
+        dark_room = engine.AmbientMeasurement(
+            value=139.6, p50=139.6, p75=145.0, p90=157.0,
+            scene_spread=17.4, highlight_ratio=0.01,
+            lower_quartile=132.0,
+        )
+        sunny_room = engine.AmbientMeasurement(
+            value=125.4, p50=105.0, p75=170.0, p90=205.0,
+            scene_spread=100.0, highlight_ratio=0.09,
+            lower_quartile=82.0,
+        )
+        bright_room = engine.AmbientMeasurement(
+            value=124.1, p50=108.0, p75=158.0, p90=205.0,
+            scene_spread=80.0, highlight_ratio=0.06,
+            lower_quartile=85.0,
+        )
+
+        dark_target = engine.BrightnessController().update(dark_room)
+        sunny_target = engine.BrightnessController().update(sunny_room)
+        bright_target = engine.BrightnessController().update(bright_room)
+
+        self.assertEqual(dark_target, 34)
+        self.assertGreaterEqual(sunny_target, 60)
+        self.assertLessEqual(sunny_target, 70)
+        self.assertGreaterEqual(bright_target, 54)
+        self.assertLessEqual(bright_target, 62)
+
+    def test_personalized_bright_scene_calibration_is_smooth_and_bounded(self):
+        samples = [
+            (145.0, 65, 95.0),
+            (132.3, 60, 90.0),
+            (123.0, 56, 85.0),
+        ]
+        targets = []
+        for value, expected, spread in samples:
+            measurement = engine.AmbientMeasurement(
+                value=value,
+                p50=value - 34.0,
+                p75=value + 10.0,
+                p90=value - 34.0 + spread,
+                scene_spread=spread,
+                highlight_ratio=0.06,
+                lower_quartile=value - 50.0,
+            )
+            target = engine.BrightnessController().update(measurement)
+            targets.append(target)
+            self.assertLessEqual(abs(target - expected), 3)
+
+        self.assertEqual(targets, sorted(targets, reverse=True))
+        self.assertEqual(
+            engine.BrightnessController().update(
+                engine.AmbientMeasurement(
+                    139.6, 139.6, 145.0, 157.0, 17.4, 0.01
+                )
+            ),
+            34,
+        )
+
+    def test_controller_target_is_the_brightness_request_sent_to_windows(self):
+        measurement = engine.AmbientMeasurement(
+            value=123.5, p50=96.0, p75=135.0, p90=201.0,
+            scene_spread=105.0, highlight_ratio=0.09,
+            lower_quartile=72.0,
+        )
+        controller_target = engine.BrightnessController().update(measurement)
+        with mock.patch.object(engine.subprocess, "run") as run:
+            engine.set_brightness(controller_target)
+        self.assertEqual(controller_target, 65)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0][-1], "65")
+        self.assertEqual(commands[1][-1], "65")
+
+    def test_dim_sunset_scene_limits_boost_and_interpolates_downward(self):
+        sunset = [
+            engine.AmbientMeasurement(148.0, 123.0, 164.0, 208.0, 85.0, 0.011, 92.0),
+            engine.AmbientMeasurement(152.6, 125.0, 173.0, 213.0, 88.0, 0.026, 94.0),
+            engine.AmbientMeasurement(156.0, 129.0, 176.0, 215.0, 86.0, 0.038, 98.0),
+        ]
+        controller = engine.BrightnessController()
+        targets = [controller.update(item) for item in sunset]
+        self.assertLessEqual(targets[0], 56)
+        self.assertLessEqual(targets[1], 52)
+        self.assertLessEqual(targets[2], 51)
+        self.assertGreaterEqual(targets[0], targets[1])
+        self.assertGreaterEqual(targets[1], targets[2])
+        self.assertLessEqual(targets[0], 56)
+        self.assertLessEqual(targets[1], 52)
+        self.assertLessEqual(targets[2], 51)
+
+    def test_illuminated_sunset_scene_is_distinct_from_dim_sunset_scene(self):
+        dim = [
+            engine.AmbientMeasurement(148.0, 123.0, 164.0, 208.0, 85.0, 0.011, 92.0),
+            engine.AmbientMeasurement(152.6, 125.0, 173.0, 213.0, 88.0, 0.026, 94.0),
+            engine.AmbientMeasurement(156.0, 129.0, 176.0, 215.0, 86.0, 0.038, 98.0),
+        ]
+        illuminated = engine.AmbientMeasurement(
+            156.2, 137.0, 173.0, 193.0, 56.0, 0.0, 120.0
+        )
+        dim_controller = engine.BrightnessController()
+        dim_target = [dim_controller.update(item) for item in dim][-1]
+        illuminated_controller = engine.BrightnessController()
+        illuminated_target = illuminated_controller.update(illuminated)
+        self.assertFalse(illuminated_controller.last_dim_scene)
+        self.assertLessEqual(dim_target, 50)
+        self.assertGreaterEqual(illuminated_target, 52)
+
+    def test_lights_on_transition_resets_dim_scene_history(self):
+        controller = engine.BrightnessController()
+        dim = engine.AmbientMeasurement(
+            156.0, 129.0, 176.0, 215.0, 86.0, 0.038, 98.0
+        )
+        illuminated = engine.AmbientMeasurement(
+            156.2, 137.0, 173.0, 193.0, 56.0, 0.0, 120.0
+        )
+        controller.update(dim)
+        controller.update(dim)
+        target = controller.update(illuminated)
+        self.assertFalse(controller.last_dim_scene)
+        self.assertEqual(controller.sunset_rising_steps, 0)
+        self.assertEqual(controller.last_trend_penalty, 0.0)
+        self.assertGreaterEqual(target, 53)
+
     def test_sample_camera_uses_five_measurements_and_median(self):
         frames = [(True, self.ValidFrame()) for _ in range(13)]
         measurements = iter([100.0, 100.0, 12.0, 100.0, 100.0])
         camera = self.make_camera(frames)
         with mock.patch.object(engine.cv2, "VideoCapture", return_value=camera), \
-             mock.patch.object(engine, "ambient_value", side_effect=lambda _frame: next(measurements)), \
+             mock.patch.object(
+                 engine,
+                 "ambient_measurement",
+                 side_effect=lambda _frame: engine.AmbientMeasurement(
+                     next(measurements), 0.0, 0.0, 0.0, 0.0, 0.0
+                 ),
+             ), \
              mock.patch.object(engine.time, "sleep"):
             result = engine.sample_camera(0)
 
@@ -75,7 +203,13 @@ class BrightnessEngineTests(unittest.TestCase):
             measurements = iter(measurements)
             camera = self.make_camera(frames)
             with mock.patch.object(engine.cv2, "VideoCapture", return_value=camera), \
-                 mock.patch.object(engine, "ambient_value", side_effect=lambda _frame: next(measurements)), \
+                 mock.patch.object(
+                     engine,
+                     "ambient_measurement",
+                     side_effect=lambda _frame: engine.AmbientMeasurement(
+                         next(measurements), 0.0, 0.0, 0.0, 0.0, 0.0
+                     ),
+                 ), \
                  mock.patch.object(engine.time, "sleep"):
                 return engine.sample_camera(0)
 
@@ -132,7 +266,13 @@ class BrightnessEngineTests(unittest.TestCase):
         camera = self.make_camera(frames)
 
         with mock.patch.object(engine.cv2, "VideoCapture", return_value=camera), \
-             mock.patch.object(engine, "ambient_value", side_effect=lambda _frame: next(measurements)), \
+             mock.patch.object(
+                 engine,
+                 "ambient_measurement",
+                 side_effect=lambda _frame: engine.AmbientMeasurement(
+                     next(measurements), 0.0, 0.0, 0.0, 0.0, 0.0
+                 ),
+             ), \
              mock.patch.object(engine.time, "sleep"):
             result = engine.sample_camera(0)
 

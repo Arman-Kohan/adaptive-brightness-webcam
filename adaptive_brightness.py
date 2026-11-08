@@ -36,6 +36,21 @@ class BrightnessConfig:
     sudden_change_alpha: float = 0.8
     sudden_change_threshold: float = 45.0
     brightness_hysteresis: int = 2
+    scene_boost_max: float = 110.0
+    scene_spread_start: float = 25.0
+    scene_spread_end: float = 95.0
+    bright_scene_start: float = 118.0
+    bright_scene_end: float = 155.0
+    bright_scene_response: float = 0.30
+    highlight_response_span: float = 0.06
+    dim_scene_lower_quartile: float = 110.0
+    dim_scene_median: float = 132.0
+    dim_scene_median_span: float = 24.0
+    illuminated_scene_median_start: float = 130.0
+    illuminated_scene_median_end: float = 137.0
+    dim_scene_highlight_ratio: float = 0.05
+    dim_scene_boost: float = 60.0
+    sunset_trend_penalty: float = 20.0
 
 
 DEFAULT_BRIGHTNESS_CONFIG = BrightnessConfig()
@@ -50,6 +65,19 @@ class CameraProperties:
     gain: float | None = None
     auto_white_balance: float | None = None
     white_balance: float | None = None
+
+
+@dataclass(frozen=True)
+class AmbientMeasurement:
+    """Image-derived illumination estimate and scene diagnostics."""
+
+    value: float
+    p50: float
+    p75: float
+    p90: float
+    scene_spread: float
+    highlight_ratio: float
+    lower_quartile: float | None = None
 
 
 class ExposureCalibration:
@@ -80,6 +108,7 @@ def _validate_ambient(value: float) -> bool:
 
 def set_brightness(percent: int) -> None:
     percent = max(10, min(100, int(percent)))
+    logging.info("brightness request: %s", percent)
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     commands = [
         (
@@ -154,8 +183,8 @@ def ramp_brightness(start: int, end: int, cancel_check=None) -> bool:
         time.sleep(0.12)
     return True
 
-def ambient_value(frame) -> float:
-    """Estimate scene illumination from robust luminance percentiles."""
+def ambient_measurement(frame) -> AmbientMeasurement:
+    """Estimate illumination and scene context from robust luminance statistics."""
     if not _valid_capture_frame(frame):
         raise ValueError("frame is empty or invalid")
 
@@ -171,8 +200,23 @@ def ambient_value(frame) -> float:
     else:
         raise ValueError("frame must have one grayscale or at least three color channels")
     pixels = luminance.reshape(-1)
-    p50, p75, p90 = np.percentile(pixels, (50, 75, 90))
-    return float(0.55 * p50 + 0.30 * p75 + 0.15 * p90)
+    p25, p50, p75, p90 = np.percentile(pixels, (25, 50, 75, 90))
+    pixels_u8 = pixels.astype(np.uint8)
+    highlight_ratio = float(np.mean(pixels_u8 >= 235))
+    return AmbientMeasurement(
+        value=float(0.55 * p50 + 0.30 * p75 + 0.15 * p90),
+        p50=float(p50),
+        p75=float(p75),
+        p90=float(p90),
+        scene_spread=float(p90 - p50),
+        highlight_ratio=highlight_ratio,
+        lower_quartile=float(p25),
+    )
+
+
+def ambient_value(frame) -> float:
+    """Return the scalar ambient estimate for backwards-compatible callers."""
+    return ambient_measurement(frame).value
 
 
 def _camera_properties(camera) -> CameraProperties:
@@ -226,13 +270,155 @@ class BrightnessController:
         self.config = config
         self.filtered_ambient: float | None = None
         self.target_brightness: int | None = None
+        self.previous_raw_ambient: float | None = None
+        self.sunset_rising_steps = 0
+        self.last_effective_ambient: float | None = None
+        self.last_dim_scene = False
+        self.last_scene_boost = 0.0
+        self.last_trend_penalty = 0.0
 
-    def update(self, value: float) -> int | None:
+    def _effective_ambient(self, measurement: AmbientMeasurement) -> float:
+        spread_range = self.config.scene_spread_end - self.config.scene_spread_start
+        if spread_range <= 0.0:
+            return measurement.value
+        spread_fraction = _clamp(
+            (measurement.scene_spread - self.config.scene_spread_start) / spread_range,
+            0.0,
+            1.0,
+        )
+        highlight_fraction = _clamp(measurement.highlight_ratio / 0.12, 0.0, 1.0)
+        scene_fraction = spread_fraction * (0.7 + 0.3 * highlight_fraction)
+        boost = scene_fraction * self.config.scene_boost_max
+        bright_fraction = _clamp(
+            (measurement.value - self.config.bright_scene_start)
+            / (self.config.bright_scene_end - self.config.bright_scene_start),
+            0.0,
+            1.0,
+        )
+        highlight_response = self.config.bright_scene_response
+        if self.config.highlight_response_span > 0.0:
+            high_highlight_fraction = _clamp(
+                (measurement.highlight_ratio - 0.01)
+                / self.config.highlight_response_span,
+                0.0,
+                1.0,
+            )
+            highlight_response += (
+                high_highlight_fraction
+                * (1.0 - self.config.bright_scene_response)
+            )
+        illuminated_fraction = _clamp(
+            (measurement.p50 - self.config.illuminated_scene_median_start)
+            / (
+                self.config.illuminated_scene_median_end
+                - self.config.illuminated_scene_median_start
+            ),
+            0.0,
+            1.0,
+        )
+        highlight_response = max(highlight_response, illuminated_fraction)
+        lower_quartile = (
+            measurement.lower_quartile
+            if measurement.lower_quartile is not None
+            else measurement.p50
+        )
+        feature_median_floor = (
+            self.config.dim_scene_median - self.config.dim_scene_median_span / 2.0
+        )
+        if measurement.p50 < feature_median_floor:
+            legacy_darkness_value = (
+                measurement.lower_quartile
+                if measurement.lower_quartile is not None
+                else measurement.p50
+            )
+            darkness_fraction = _clamp(
+                (105.0 - legacy_darkness_value) / 55.0,
+                0.0,
+                1.0,
+            )
+        else:
+            lower_quartile_darkness = _clamp(
+                (self.config.dim_scene_lower_quartile - lower_quartile)
+                / self.config.dim_scene_lower_quartile,
+                0.0,
+                1.0,
+            )
+            median_darkness = _clamp(
+                (self.config.dim_scene_median - measurement.p50)
+                / self.config.dim_scene_median_span,
+                0.0,
+                1.0,
+            )
+            darkness_fraction = min(lower_quartile_darkness, median_darkness)
+        highlight_response *= 1.0 - 0.65 * darkness_fraction
+        boost *= 1.0 - bright_fraction * (1.0 - highlight_response)
+        self.last_scene_boost = boost
+        return _clamp(
+            measurement.value + boost,
+            0.0,
+            255.0,
+        )
+
+    def update(self, value: float | AmbientMeasurement) -> int | None:
+        raw_value = value.value if isinstance(value, AmbientMeasurement) else value
+        if not isinstance(raw_value, (int, float)) or not _validate_ambient(float(raw_value)):
+            logging.warning("Ignoring invalid ambient value: %r", raw_value)
+            return self.target_brightness
+        measurement = (
+            value
+            if isinstance(value, AmbientMeasurement)
+            else AmbientMeasurement(
+                value=float(raw_value),
+                p50=float(raw_value),
+                p75=float(raw_value),
+                p90=float(raw_value),
+                scene_spread=0.0,
+                highlight_ratio=0.0,
+            )
+        )
+        value = self._effective_ambient(measurement)
+        lower_quartile = (
+            measurement.lower_quartile
+            if measurement.lower_quartile is not None
+            else measurement.p50
+        )
+        dim_scene = (
+            measurement.lower_quartile is not None
+            and lower_quartile <= self.config.dim_scene_lower_quartile
+            and measurement.p50 <= self.config.dim_scene_median
+            and measurement.highlight_ratio <= self.config.dim_scene_highlight_ratio
+        )
+        if dim_scene != self.last_dim_scene:
+            self.sunset_rising_steps = 0
+        if dim_scene:
+            if (
+                self.previous_raw_ambient is not None
+                and raw_value > self.previous_raw_ambient + self.config.ambient_deadband
+            ):
+                self.sunset_rising_steps += 1
+            dim_boost = self.config.dim_scene_boost * _clamp(
+                (self.config.dim_scene_lower_quartile - lower_quartile)
+                / self.config.dim_scene_lower_quartile,
+                0.0,
+                1.0,
+            )
+            self.last_trend_penalty = (
+                self.sunset_rising_steps * self.config.sunset_trend_penalty
+            )
+            value += dim_boost - self.last_trend_penalty
+        else:
+            self.sunset_rising_steps = 0
+            self.last_trend_penalty = 0.0
+        scene_transition = self.last_dim_scene and not dim_scene
+        self.last_dim_scene = dim_scene
+        self.previous_raw_ambient = float(raw_value)
+        self.last_effective_ambient = _clamp(value, 0.0, 255.0)
+        value = self.last_effective_ambient
         if not _validate_ambient(value):
             logging.warning("Ignoring invalid ambient value: %r", value)
             return self.target_brightness
 
-        if self.filtered_ambient is None:
+        if self.filtered_ambient is None or scene_transition:
             self.filtered_ambient = value
         else:
             delta = value - self.filtered_ambient
@@ -269,7 +455,8 @@ def _valid_capture_frame(frame) -> bool:
 def sample_camera(
     index: int,
     calibration: ExposureCalibration | None = None,
-) -> float | None:
+    detailed: bool = False,
+) -> float | AmbientMeasurement | None:
     camera = None
     try:
         camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
@@ -297,16 +484,24 @@ def sample_camera(
             properties.white_balance,
         )
 
-        samples = []
+        samples: list[AmbientMeasurement] = []
         for _ in range(MEASUREMENT_SAMPLE_COUNT):
             try:
                 ok, frame = camera.read()
                 if ok and _valid_capture_frame(frame):
-                    value = ambient_value(frame)
+                    measurement = ambient_measurement(frame)
                     if calibration is not None:
-                        value = calibration.adjust(value, properties)
-                    if value > 1.0:
-                        samples.append(value)
+                        measurement = AmbientMeasurement(
+                            value=calibration.adjust(measurement.value, properties),
+                            p50=measurement.p50,
+                            p75=measurement.p75,
+                            p90=measurement.p90,
+                            scene_spread=measurement.scene_spread,
+                            highlight_ratio=measurement.highlight_ratio,
+                            lower_quartile=measurement.lower_quartile,
+                        )
+                    if measurement.value > 1.0:
+                        samples.append(measurement)
                 else:
                     logging.warning("Camera %s returned an invalid frame", index)
             except Exception:
@@ -316,8 +511,22 @@ def sample_camera(
         if len(samples) < 2:
             logging.warning("Camera %s did not provide enough valid frames", index)
             return None
-        samples.sort()
-        return samples[len(samples) // 2]
+        samples.sort(key=lambda item: item.value)
+        measurement = samples[len(samples) // 2]
+        logging.info(
+            "Camera %s measurement: value=%.1f p25=%s p50=%.1f p75=%.1f "
+            "p90=%.1f spread=%.1f highlights=%.3f exposure=%s",
+            index,
+            measurement.value,
+            measurement.lower_quartile,
+            measurement.p50,
+            measurement.p75,
+            measurement.p90,
+            measurement.scene_spread,
+            measurement.highlight_ratio,
+            properties.exposure,
+        )
+        return measurement if detailed else measurement.value
     except Exception:
         logging.exception("Camera %s sampling failed", index)
         return None
@@ -345,7 +554,7 @@ def main() -> None:
     calibration = ExposureCalibration()
     last_target = None
     while True:
-        value = sample_camera(args.camera, calibration)
+        value = sample_camera(args.camera, calibration, detailed=True)
         if value is None:
             logging.warning("Camera sample unavailable")
         else:
