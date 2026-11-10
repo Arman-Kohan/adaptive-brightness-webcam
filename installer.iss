@@ -1,6 +1,6 @@
 [Setup]
 AppName=Adaptive Brightness Webcam
-AppVersion=1.0.8
+AppVersion=1.0.9
 DefaultDirName={autopf}\Adaptive Brightness Webcam
 DefaultGroupName=Adaptive Brightness Webcam
 OutputDir=dist\installer
@@ -18,4 +18,4 @@ Name: "{group}\Adaptive Brightness Webcam"; Filename: "{app}\AdaptiveBrightnessW
 Name: "{autodesktop}\Adaptive Brightness Webcam"; Filename: "{app}\AdaptiveBrightnessWebcam.exe"
 
 [Run]
-Filename: "{app}\AdaptiveBrightnessWebcam.exe"; Description: "Ø§Ø¬Ø±Ø§ÛŒ Adaptive Brightness Webcam"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\AdaptiveBrightnessWebcam.exe"; Description: "Launch Adaptive Brightness Webcam"; Flags: nowait postinstall skipifsilent

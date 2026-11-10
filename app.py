@@ -29,6 +29,9 @@ import adaptive_brightness as engine
 APP_NAME = "Adaptive Brightness Webcam"
 AUTOSTART_FLAG = "--autostart"
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+FIXED_INTERVAL_MODE = "Fixed Interval"
+SMART_ADAPTIVE_MODE = "Smart Adaptive"
+DEFAULT_SAMPLING_MODE = SMART_ADAPTIVE_MODE
 
 # ------------------------------------------------------------
 # iOS 27-style design tokens
@@ -72,6 +75,25 @@ except AttributeError:
     LANCZOS = Image.LANCZOS
 
 _ICON_MASTER = None
+
+
+def resolve_sampling_mode(saved_mode: str | None = None) -> str:
+    """Keep a saved mode, or choose Smart Adaptive for fresh configurations."""
+    if saved_mode in (FIXED_INTERVAL_MODE, SMART_ADAPTIVE_MODE):
+        return saved_mode
+    return DEFAULT_SAMPLING_MODE
+
+
+def sampling_mode_visibility(mode: str) -> tuple[bool, bool]:
+    """Return whether fixed and Smart Adaptive settings should be visible."""
+    return mode != SMART_ADAPTIVE_MODE, mode == SMART_ADAPTIVE_MODE
+
+
+def sampling_mode_description(mode: str) -> str:
+    """Return concise help for the currently selected sampling mode."""
+    if mode == SMART_ADAPTIVE_MODE:
+        return "Starts at 5 seconds and adjusts between the configured limits as lighting changes."
+    return "Checks on the configured schedule. Battery mode may increase the wait between checks."
 
 
 def get_auto_theme() -> str:
@@ -359,8 +381,11 @@ class BrightnessApp(ctk.CTk):
 
         # Settings variables
         self.camera_var = ctk.StringVar(value="0")
-        self.interval_var = ctk.StringVar(value="120")
-        self.preset_var = ctk.StringVar(value="120")
+        self.mode_var = ctk.StringVar(value=resolve_sampling_mode())
+        self.mode_hint_var = ctk.StringVar(value="")
+        self.interval_var = ctk.StringVar(value=str(engine.DEFAULT_FIXED_INTERVAL))
+        self.minimum_interval_var = ctk.StringVar(value="2")
+        self.maximum_interval_var = ctk.StringVar(value="60")
         self.startup_var = ctk.BooleanVar(value=self.startup_enabled())
         self.close_to_tray_var = ctk.BooleanVar(value=True)
 
@@ -368,6 +393,9 @@ class BrightnessApp(ctk.CTk):
         self.last_value_var = ctk.StringVar(value="-")
         self.last_target_var = ctk.StringVar(value="-")
         self.last_update_var = ctk.StringVar(value="-")
+        self.current_interval_var = ctk.StringVar(value="-")
+        self.stability_var = ctk.StringVar(value="-")
+        self.trend_var = ctk.StringVar(value="-")
 
         self.build_ui()
         self.center_window()
@@ -538,14 +566,16 @@ class BrightnessApp(ctk.CTk):
         ).pack(anchor="w", pady=(0, 8))
 
     def ios_hint(self, parent, text):
-        ctk.CTkLabel(
+        label = ctk.CTkLabel(
             parent,
             text=text,
             font=("Segoe UI", 9),
             text_color=TEXT_SECONDARY,
             wraplength=520,
             justify="left",
-        ).pack(anchor="w", pady=(6, 0))
+        )
+        label.pack(anchor="w", pady=(6, 0))
+        return label
 
     def ios_divider(self, parent):
         self.make_frame(
@@ -962,11 +992,37 @@ class BrightnessApp(ctk.CTk):
         )
         self.ios_divider(container)
 
-        # Interval
-        self.ios_section_title(container, "Check interval")
-        interval_row = self.ios_row(container, "Seconds")
+        # Sampling mode
+        self.ios_section_title(container, "Sampling mode")
+        self.ios_segmented(
+            container,
+            [FIXED_INTERVAL_MODE, SMART_ADAPTIVE_MODE],
+            self.mode_var,
+            command=self.on_sampling_mode_change,
+        ).pack(fill="x")
+        self.mode_hint = self.ios_hint(
+            container,
+            "",
+        )
+        self.mode_hint.configure(textvariable=self.mode_hint_var)
+        self.sampling_settings_container = self.make_frame(
+            container,
+            bg_color=APP_BG,
+            fg_color="transparent",
+        )
+        self.sampling_settings_container.pack(fill="x", pady=(8, 0))
 
-        ctk.CTkEntry(
+        # Fixed interval
+        self.fixed_settings = self.make_frame(
+            self.sampling_settings_container,
+            bg_color=APP_BG,
+            fg_color="transparent",
+        )
+        self.fixed_settings.pack(fill="x")
+        self.ios_section_title(self.fixed_settings, "Check interval")
+        interval_row = self.ios_row(self.fixed_settings, "Seconds")
+
+        self.interval_entry = ctk.CTkEntry(
             interval_row,
             textvariable=self.interval_var,
             width=92,
@@ -978,27 +1034,50 @@ class BrightnessApp(ctk.CTk):
             text_color=TEXT_PRIMARY,
             font=("Segoe UI", 12, "bold"),
             justify="center",
-        ).pack(side="right")
-
-        preset_seg = self.ios_segmented(
-            container,
-            ["120", "300", "600"],
-            self.preset_var,
-            command=lambda value: self.interval_var.set(value),
         )
-        preset_seg.pack(fill="x", pady=(10, 0))
-
-        def _sync_preset(*_args):
-            value = self.interval_var.get().strip()
-            if value in ("120", "300", "600") and self.preset_var.get() != value:
-                self.preset_var.set(value)
-
-        self._trace(self.interval_var, _sync_preset)
+        self.interval_entry.pack(side="right")
 
         self.ios_hint(
-            container,
+            self.fixed_settings,
             "Minimum 30 seconds. Battery mode automatically adds extra delay.",
         )
+        self.adaptive_settings = self.make_frame(
+            self.sampling_settings_container,
+            bg_color=APP_BG,
+            fg_color="transparent",
+        )
+        self.adaptive_settings.pack(fill="x")
+        self.ios_section_title(self.adaptive_settings, "Smart mode limits")
+        limits_row = self.make_frame(
+            self.adaptive_settings, bg_color=APP_BG, fg_color="transparent"
+        )
+        limits_row.pack(fill="x")
+        for label, variable in (
+            ("Minimum seconds", self.minimum_interval_var),
+            ("Maximum seconds", self.maximum_interval_var),
+        ):
+            field = self.make_frame(limits_row, bg_color=APP_BG, fg_color="transparent")
+            field.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            ctk.CTkLabel(
+                field, text=label, font=("Segoe UI", 9), text_color=TEXT_SECONDARY
+            ).pack(anchor="w")
+            ctk.CTkEntry(
+                field,
+                textvariable=variable,
+                width=100,
+                height=38,
+                corner_radius=12,
+                fg_color=FIELD_BG,
+                border_color=FIELD_BORDER,
+                border_width=1,
+                text_color=TEXT_PRIMARY,
+                justify="center",
+            ).pack(anchor="w", pady=(4, 0))
+        self.ios_hint(
+            self.adaptive_settings,
+            "Smart mode starts at 5 seconds and progressively moves between these limits.",
+        )
+        self._refresh_sampling_mode()
         self.ios_divider(container)
 
         # Appearance
@@ -1063,6 +1142,30 @@ class BrightnessApp(ctk.CTk):
             self.camera_value_label.configure(text=f"Camera {self.camera_var.get()}")
         except Exception:
             pass
+
+    def _refresh_sampling_mode(self, *_args):
+        mode = resolve_sampling_mode(self.mode_var.get())
+        fixed_visible, smart_visible = sampling_mode_visibility(mode)
+        try:
+            self.mode_hint_var.set(sampling_mode_description(mode))
+            if smart_visible:
+                self.fixed_settings.pack_forget()
+                self.adaptive_settings.pack(fill="x")
+            elif fixed_visible:
+                self.adaptive_settings.pack_forget()
+                self.fixed_settings.pack(fill="x")
+                self.interval_entry.configure(state="normal")
+        except AttributeError:
+            pass
+
+    def on_sampling_mode_change(self, _value=None):
+        if self.is_running:
+            self.stop()
+            self.show_toast(
+                "Automation stopped. Start again to apply the new sampling mode.",
+                "warning",
+            )
+        self._refresh_sampling_mode()
 
     def build_camera_chips(self, parent):
         """iOS-like selectable camera grid instead of a dropdown."""
@@ -1159,6 +1262,10 @@ class BrightnessApp(ctk.CTk):
             font=("Segoe UI", 12, "bold"),
             text_color=TEXT_PRIMARY,
         ).pack(side="right")
+
+        self.metric_card(content, "Sampling interval", self.current_interval_var, "seconds")
+        self.metric_card(content, "Environment", self.stability_var, "stability")
+        self.metric_card(content, "Recent trend", self.trend_var, "camera units/s")
 
         tip = self.make_frame(
             body,
@@ -1375,16 +1482,41 @@ class BrightnessApp(ctk.CTk):
 
         try:
             camera = int(self.camera_var.get())
-            interval = float(self.interval_var.get())
         except (TypeError, ValueError):
-            self.show_toast("Enter a valid camera number and interval.", "error")
+            self.show_toast("Enter a valid camera number.", "error")
             return
+        mode = resolve_sampling_mode(self.mode_var.get())
+        interval = engine.DEFAULT_FIXED_INTERVAL
+        if mode == FIXED_INTERVAL_MODE:
+            try:
+                interval = float(self.interval_var.get())
+            except (TypeError, ValueError):
+                self.show_toast("Enter a valid interval.", "error")
+                return
         if camera < 0:
             self.show_toast("Camera number must be non-negative.", "error")
             return
-        if not math.isfinite(interval) or interval < 30.0:
+        if mode == FIXED_INTERVAL_MODE and (
+            not math.isfinite(interval) or interval < 30.0
+        ):
             self.show_toast("Interval must be a finite value of at least 30 seconds.", "error")
             return
+        adaptive_config = None
+        if mode == SMART_ADAPTIVE_MODE:
+            try:
+                minimum_interval = float(self.minimum_interval_var.get())
+                maximum_interval = float(self.maximum_interval_var.get())
+                adaptive_config = engine.AdaptiveSamplingConfig(
+                    minimum_interval=minimum_interval,
+                    maximum_interval=maximum_interval,
+                    initial_interval=max(
+                        minimum_interval,
+                        min(5.0, maximum_interval),
+                    ),
+                )
+            except (TypeError, ValueError) as exc:
+                self.show_toast(f"Invalid smart-mode limits: {exc}", "error")
+                return
 
         worker_stop_event = threading.Event()
         self.stop_event = worker_stop_event
@@ -1393,14 +1525,19 @@ class BrightnessApp(ctk.CTk):
 
         self.worker_thread = threading.Thread(
             target=self.worker,
-            args=(camera, interval, gen, worker_stop_event),
+            args=(camera, interval, gen, worker_stop_event, mode, adaptive_config),
             daemon=True,
         )
         self.worker_thread.start()
 
         self.is_running = True
 
-        self.set_status("Running", "Monitoring ambient light", "running")
+        status_text = (
+            "Smart Adaptive running"
+            if mode == SMART_ADAPTIVE_MODE
+            else "Running"
+        )
+        self.set_status(status_text, "Monitoring ambient light", "running")
         self.refresh_run_controls()
         self.update_tray_state()
         self.show_toast("Automation started", "success")
@@ -1420,9 +1557,22 @@ class BrightnessApp(ctk.CTk):
         else:
             self.start()
 
-    def worker(self, camera, interval, generation, worker_stop_event):
+    def worker(
+        self,
+        camera,
+        interval,
+        generation,
+        worker_stop_event,
+        mode=FIXED_INTERVAL_MODE,
+        adaptive_config=None,
+    ):
         controller = engine.BrightnessController()
         calibration = engine.ExposureCalibration()
+        adaptive = (
+            engine.AdaptiveSamplingController(adaptive_config)
+            if mode == SMART_ADAPTIVE_MODE
+            else None
+        )
         last_measured_target = None
         last_commanded_target = None
 
@@ -1437,7 +1587,9 @@ class BrightnessApp(ctk.CTk):
 
                 if value is None:
                     self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
+                    wait_interval = adaptive.current_interval if adaptive else interval
                 else:
+                    decision = adaptive.update(value) if adaptive else None
                     target = controller.update(value)
                     if target is None:
                         self.events.put(
@@ -1450,7 +1602,12 @@ class BrightnessApp(ctk.CTk):
                                 ),
                             )
                         )
-                        worker_stop_event.wait(self.power_aware_interval(interval))
+                        wait_interval = decision.interval if decision else interval
+                        worker_stop_event.wait(
+                            wait_interval
+                            if adaptive
+                            else self.power_aware_interval(wait_interval)
+                        )
                         continue
                     last_measured_target = target
 
@@ -1487,13 +1644,26 @@ class BrightnessApp(ctk.CTk):
                                 controller.last_scene_boost,
                                 controller.last_trend_penalty,
                             )
-                            self.events.put(("reading", (display_value, last_measured_target)))
+                            self.events.put(
+                                (
+                                    "reading",
+                                    (
+                                        display_value,
+                                        last_measured_target,
+                                        decision,
+                                    ),
+                                )
+                            )
+                    wait_interval = decision.interval if decision else interval
 
             except Exception as exc:
                 logging.exception("Brightness update failed")
                 self.events.put(("status", ("Update failed", str(exc), "error")))
+                wait_interval = adaptive.current_interval if adaptive else interval
 
-            worker_stop_event.wait(self.power_aware_interval(interval))
+            worker_stop_event.wait(
+                wait_interval if adaptive else self.power_aware_interval(wait_interval)
+            )
 
         if self.worker_thread is threading.current_thread():
             self.worker_thread = None
@@ -1562,15 +1732,29 @@ class BrightnessApp(ctk.CTk):
                 kind, payload = self.events.get_nowait()
 
                 if kind == "reading":
-                    value, target = payload
+                    value, target = payload[:2]
+                    decision = payload[2] if len(payload) > 2 else None
 
                     self.last_value_var.set(f"{value:.1f}")
                     self.last_target_var.set(f"{target}%")
                     self.progress.set(target / 100)
                     self.last_update_var.set(datetime.now().strftime("%H:%M:%S"))
+                    if decision is not None:
+                        self.current_interval_var.set(
+                            f"{decision.interval:.1f} ({decision.direction})"
+                        )
+                        self.stability_var.set(decision.state.title())
+                        self.trend_var.set(f"{decision.trend:+.2f}")
 
                     if self.is_running:
-                        self.set_status("Running", "Monitoring ambient light", "running")
+                        if decision is not None:
+                            self.set_status(
+                                "Smart Adaptive running",
+                                f"{decision.state.title()} · next sample in {decision.interval:.1f}s",
+                                "running",
+                            )
+                        else:
+                            self.set_status("Running", "Monitoring ambient light", "running")
 
                 elif kind == "status":
                     self.set_status(*payload)
@@ -1582,6 +1766,9 @@ class BrightnessApp(ctk.CTk):
                     self.last_target_var.set(f"{target}%")
                     self.progress.set(target / 100)
                     self.last_update_var.set(datetime.now().strftime("%H:%M:%S"))
+                    self.current_interval_var.set("-")
+                    self.stability_var.set("-")
+                    self.trend_var.set("-")
 
                     self.testing = False
                     self.test_btn.configure(state="normal")
