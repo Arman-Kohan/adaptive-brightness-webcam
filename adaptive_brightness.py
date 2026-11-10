@@ -1,6 +1,7 @@
 """Adaptive Windows display brightness using a short webcam light sample."""
 from __future__ import annotations
 import argparse
+from collections import deque
 import logging
 import math
 import subprocess
@@ -14,6 +15,7 @@ import numpy as np
 BRIGHTNESS_GUID = "aded5e82-b909-4619-9949-f5d71dac0bcb"
 MEASUREMENT_SAMPLE_COUNT = 5
 LOG_FILE = Path.home() / ".adaptive-brightness-webcam.log"
+DEFAULT_FIXED_INTERVAL = 120.0
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -78,6 +80,234 @@ class AmbientMeasurement:
     scene_spread: float
     highlight_ratio: float
     lower_quartile: float | None = None
+
+
+@dataclass(frozen=True)
+class AdaptiveSamplingConfig:
+    """Bounds and sensitivity settings for smart sampling."""
+
+    initial_interval: float = 5.0
+    minimum_interval: float = 2.0
+    maximum_interval: float = 60.0
+    history_size: int = 12
+    ema_alpha: float = 0.35
+    sudden_change_alpha: float = 0.82
+    noise_floor: float = 2.0
+    stable_delta: float = 4.0
+    significant_delta: float = 12.0
+    rapid_delta: float = 28.0
+    stable_samples: int = 4
+    highly_stable_samples: int = 8
+    increase_factor: float = 1.35
+    decrease_factor: float = 0.45
+
+    def __post_init__(self):
+        if not (
+            0.0 < self.minimum_interval <= self.initial_interval
+            <= self.maximum_interval
+        ):
+            raise ValueError("adaptive intervals must satisfy minimum <= initial <= maximum")
+        if self.history_size < 4:
+            raise ValueError("history_size must be at least 4")
+        if not 0.0 < self.ema_alpha <= 1.0:
+            raise ValueError("ema_alpha must be in (0, 1]")
+        if not 0.0 < self.sudden_change_alpha <= 1.0:
+            raise ValueError("sudden_change_alpha must be in (0, 1]")
+        if self.stable_samples < 2 or self.highly_stable_samples < self.stable_samples:
+            raise ValueError("stability sample thresholds are invalid")
+
+
+@dataclass(frozen=True)
+class AdaptiveSamplingDecision:
+    """Observable result of one adaptive-sampling observation."""
+
+    interval: float
+    state: str
+    trend: float
+    stability_score: float
+    filtered_value: float | None
+    valid: bool = True
+    direction: str = "holding"
+
+
+class AdaptiveSamplingController:
+    """Filter ambient observations and choose the next smart sampling interval.
+
+    The controller uses an EMA for responsiveness, a rolling median/MAD estimate
+    for camera noise, and consecutive evidence before increasing the interval.
+    Invalid observations never enter the history and therefore cannot distort
+    stability or brightness decisions.
+    """
+
+    STATES = ("unknown", "rapidly changing", "moderately changing", "relatively stable", "highly stable")
+
+    def __init__(
+        self,
+        config: AdaptiveSamplingConfig = AdaptiveSamplingConfig(),
+        clock=time.monotonic,
+    ):
+        self.config = config
+        self.clock = clock
+        self.reset()
+
+    def reset(self):
+        self.current_interval = self.config.initial_interval
+        self.history = deque(maxlen=self.config.history_size)
+        self.filtered_value: float | None = None
+        self.previous_filtered: float | None = None
+        self.previous_timestamp: float | None = None
+        self.stable_count = 0
+        self.state = "unknown"
+
+    def _decision(self, valid=True, trend=0.0, score=0.0, direction="holding"):
+        return AdaptiveSamplingDecision(
+            interval=self.current_interval,
+            state=self.state,
+            trend=trend,
+            stability_score=score,
+            filtered_value=self.filtered_value,
+            valid=valid,
+            direction=direction,
+        )
+
+    def _robust_trend(self) -> float:
+        slopes = []
+        history = list(self.history)
+        for index, (left_time, left_value) in enumerate(history[:-1]):
+            for right_time, right_value in history[index + 1:]:
+                elapsed = right_time - left_time
+                if elapsed > 0.0:
+                    slopes.append((right_value - left_value) / elapsed)
+        return float(np.median(slopes)) if slopes else 0.0
+
+    def update(self, observation: float | AmbientMeasurement, timestamp: float | None = None):
+        raw = observation.value if isinstance(observation, AmbientMeasurement) else observation
+        try:
+            raw = float(raw)
+        except (TypeError, ValueError):
+            return self._decision(valid=False)
+        if not _validate_ambient(raw):
+            return self._decision(valid=False)
+
+        now = self.clock() if timestamp is None else float(timestamp)
+        if not math.isfinite(now):
+            now = self.clock()
+        self.history.append((now, raw))
+
+        if self.filtered_value is None:
+            self.filtered_value = raw
+            self.previous_timestamp = now
+            self.state = "unknown"
+            self.stable_count = 0
+            return self._decision(score=0.0)
+
+        self.previous_filtered = self.filtered_value
+        raw_delta = abs(raw - self.filtered_value)
+        alpha = (
+            self.config.sudden_change_alpha
+            if raw_delta >= self.config.rapid_delta
+            else self.config.ema_alpha
+        )
+        self.filtered_value += alpha * (raw - self.filtered_value)
+
+        previous_timestamp = (
+            self.previous_timestamp
+            if self.previous_timestamp is not None
+            else now
+        )
+        elapsed = max(0.001, now - previous_timestamp)
+        trend = (self.filtered_value - self.previous_filtered) / elapsed
+        deltas = [
+            abs(current - previous)
+            for (_, previous), (_, current) in zip(self.history, list(self.history)[1:])
+        ]
+        median_delta = float(np.median(deltas)) if deltas else raw_delta
+        median_value = float(np.median([value for _, value in self.history]))
+        deviations = [abs(value - median_value) for _, value in self.history]
+        mad = float(np.median(deviations)) if deviations else 0.0
+        noise = max(self.config.noise_floor, 1.4826 * mad)
+        history_trend = self._robust_trend()
+        robust_delta = max(0.0, raw_delta - noise)
+        relative_delta = robust_delta / max(abs(self.previous_filtered), 20.0)
+        rapid = robust_delta >= self.config.rapid_delta or abs(trend) >= 8.0
+        significant = (
+            robust_delta >= max(self.config.significant_delta, noise * 2.5)
+            or relative_delta >= 0.18
+            or abs(trend) >= 3.0
+        )
+        enough_evidence = len(self.history) >= 3
+        stable = (
+            enough_evidence
+            and robust_delta <= max(self.config.stable_delta, noise * 1.5)
+            and median_delta <= max(self.config.stable_delta, noise * 1.5)
+            and abs(history_trend) * min(self.current_interval, 60.0) < self.config.stable_delta
+        )
+
+        if rapid:
+            self.state = "rapidly changing"
+            self.stable_count = 0
+            self.current_interval = self.config.minimum_interval
+            direction = "decreasing"
+        elif len(self.history) < 3:
+            self.state = "unknown"
+            self.stable_count = 0
+            direction = "holding"
+        elif significant:
+            self.state = "moderately changing"
+            self.stable_count = 0
+            self.current_interval = max(
+                self.config.minimum_interval,
+                self.current_interval * 0.70,
+            )
+            direction = "decreasing"
+        elif stable:
+            self.stable_count += 1
+            self.state = (
+                "highly stable"
+                if self.stable_count >= self.config.highly_stable_samples
+                else "relatively stable"
+            )
+            if self.stable_count >= self.config.stable_samples:
+                target = self.config.maximum_interval
+                growth = self.config.increase_factor
+                if self.stable_count < self.config.highly_stable_samples:
+                    target = min(target, self.config.maximum_interval * 0.65)
+                next_interval = min(target, self.current_interval * growth)
+                direction = "increasing" if next_interval > self.current_interval else "holding"
+                self.current_interval = next_interval
+            else:
+                direction = "holding"
+        else:
+            self.state = "moderately changing"
+            self.stable_count = 0
+            direction = "holding"
+
+        self.current_interval = _clamp(
+            self.current_interval,
+            self.config.minimum_interval,
+            self.config.maximum_interval,
+        )
+        self.previous_timestamp = now
+        if len(self.history) < 3:
+            stability_score = 0.0
+        else:
+            stability_score = _clamp(
+                1.0
+                - max(
+                    robust_delta / max(self.config.significant_delta, 1.0),
+                    max(0.0, median_delta - noise)
+                    / max(self.config.significant_delta, 1.0),
+                    abs(history_trend) * min(self.current_interval, 60.0)
+                    / max(self.config.significant_delta, 1.0),
+                ),
+                0.0,
+                1.0,
+            )
+        return self._decision(
+            trend=trend,
+            score=stability_score,
+            direction=direction,
+        )
 
 
 class ExposureCalibration:
@@ -456,6 +686,7 @@ def sample_camera(
     index: int,
     calibration: ExposureCalibration | None = None,
     detailed: bool = False,
+    read_timeout: float | None = 12.0,
 ) -> float | AmbientMeasurement | None:
     camera = None
     try:
@@ -463,6 +694,13 @@ def sample_camera(
         if not camera.isOpened():
             logging.warning("Camera %s could not be opened", index)
             return None
+        if read_timeout is not None and read_timeout > 0.0:
+            try:
+                timeout_property = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+                if timeout_property is not None:
+                    camera.set(timeout_property, float(read_timeout) * 1000.0)
+            except (AttributeError, TypeError, ValueError):
+                logging.debug("Camera %s does not expose a read timeout", index)
 
         # Warm up the camera so auto-exposure settles.
         for _ in range(8):
@@ -540,44 +778,68 @@ def sample_camera(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adaptive brightness controller")
     parser.add_argument("--camera", type=int, default=0)
-    # Changed default interval from 60.0 to 120.0 (2 minutes)
-    parser.add_argument("--interval", type=float, default=120.0) 
+    parser.add_argument("--mode", choices=("fixed", "smart"), default="smart")
+    parser.add_argument("--interval", type=float, default=DEFAULT_FIXED_INTERVAL)
+    parser.add_argument("--minimum-interval", type=float, default=2.0)
+    parser.add_argument("--maximum-interval", type=float, default=60.0)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
     if args.camera < 0:
         parser.error("--camera must be a non-negative integer.")
-    if not math.isfinite(args.interval) or args.interval < 30.0:
+    if args.mode == "fixed" and (
+        not math.isfinite(args.interval) or args.interval < 30.0
+    ):
         parser.error("--interval must be a finite number of at least 30 seconds.")
-    
+    if (
+        not math.isfinite(args.minimum_interval)
+        or not math.isfinite(args.maximum_interval)
+        or args.minimum_interval < 0.5
+        or args.minimum_interval > args.maximum_interval
+    ):
+        parser.error("adaptive interval bounds must be finite and ordered.")
+
     controller = BrightnessController()
     calibration = ExposureCalibration()
+    adaptive = AdaptiveSamplingController(
+        AdaptiveSamplingConfig(
+            minimum_interval=args.minimum_interval,
+            maximum_interval=args.maximum_interval,
+            initial_interval=max(
+                args.minimum_interval,
+                min(5.0, args.maximum_interval),
+            ),
+        )
+    )
     last_target = None
     while True:
         value = sample_camera(args.camera, calibration, detailed=True)
         if value is None:
             logging.warning("Camera sample unavailable")
+            wait_interval = adaptive.current_interval if args.mode == "smart" else args.interval
         else:
+            decision = adaptive.update(value) if args.mode == "smart" else None
             target = controller.update(value)
             if target is None:
+                wait_interval = decision.interval if decision else args.interval
                 logging.warning("Ambient value did not produce a brightness target")
-                if args.once:
-                    return
-                time.sleep(args.interval)
-                continue
-            logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
-            if last_target is None or abs(target - last_target) >= 3:
-                try:
-                    if last_target is None:
-                        set_brightness(target)
-                    else:
-                        ramp_brightness(last_target, target)
-                    last_target = target
-                except Exception:
-                    logging.exception("Brightness update failed")
+            else:
+                logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
+                if last_target is None or abs(target - last_target) >= 3:
+                    try:
+                        if last_target is None:
+                            set_brightness(target)
+                        else:
+                            ramp_brightness(last_target, target)
+                        last_target = target
+                    except Exception:
+                        logging.exception("Brightness update failed")
+                wait_interval = (
+                    decision.interval if decision else args.interval
+                )
         if args.once:
             return
-        time.sleep(args.interval)
+        time.sleep(wait_interval)
 
 if __name__ == "__main__":
     main()

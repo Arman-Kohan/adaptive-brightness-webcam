@@ -391,9 +391,9 @@ class BrightnessEngineTests(unittest.TestCase):
     def test_cli_rejects_invalid_camera_and_interval(self):
         cases = [
             ["--camera", "-1", "--once"],
-            ["--interval", "nan", "--once"],
-            ["--interval", "inf", "--once"],
-            ["--interval", "29", "--once"],
+            ["--mode", "fixed", "--interval", "nan", "--once"],
+            ["--mode", "fixed", "--interval", "inf", "--once"],
+            ["--mode", "fixed", "--interval", "29", "--once"],
         ]
         for argv in cases:
             with self.subTest(argv=argv):
@@ -401,6 +401,322 @@ class BrightnessEngineTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as result:
                         engine.main()
                 self.assertEqual(result.exception.code, 2)
+
+    def test_cli_smart_mode_does_not_require_fixed_interval(self):
+        argv = [
+            "adaptive_brightness.py",
+            "--mode",
+            "smart",
+            "--interval",
+            "2",
+            "--once",
+        ]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            engine, "sample_camera", return_value=None
+        ):
+            engine.main()
+
+    def test_cli_fresh_default_uses_smart_mode(self):
+        adaptive = mock.Mock(update=mock.Mock(return_value=mock.Mock(interval=5.0)))
+        with mock.patch.object(
+            sys, "argv", ["adaptive_brightness.py", "--once"]
+        ), mock.patch.object(
+            engine, "sample_camera", return_value=100.0
+        ), mock.patch.object(
+            engine, "AdaptiveSamplingController", return_value=adaptive
+        ), mock.patch.object(
+            engine, "BrightnessController", return_value=mock.Mock(update=lambda value: 40)
+        ), mock.patch.object(
+            engine, "set_brightness"
+        ):
+            engine.main()
+
+        adaptive.update.assert_called_once_with(100.0)
+
+    def test_cli_explicit_fixed_mode_does_not_use_adaptive_controller(self):
+        adaptive = mock.Mock(update=mock.Mock())
+        with mock.patch.object(
+            sys, "argv", ["adaptive_brightness.py", "--mode", "fixed", "--once"]
+        ), mock.patch.object(
+            engine, "sample_camera", return_value=100.0
+        ), mock.patch.object(
+            engine, "AdaptiveSamplingController", return_value=adaptive
+        ), mock.patch.object(
+            engine, "BrightnessController", return_value=mock.Mock(update=lambda value: 40)
+        ), mock.patch.object(
+            engine, "set_brightness"
+        ):
+            engine.main()
+
+        adaptive.update.assert_not_called()
+
+
+class ConfigurationDefaultTests(unittest.TestCase):
+    def test_fresh_configuration_defaults_to_smart_adaptive(self):
+        import app
+
+        self.assertEqual(app.resolve_sampling_mode(), app.SMART_ADAPTIVE_MODE)
+
+    def test_explicit_fixed_mode_is_preserved(self):
+        import app
+
+        self.assertEqual(
+            app.resolve_sampling_mode(app.FIXED_INTERVAL_MODE),
+            app.FIXED_INTERVAL_MODE,
+        )
+
+    def test_existing_smart_preference_is_preserved(self):
+        import app
+
+        self.assertEqual(
+            app.resolve_sampling_mode(app.SMART_ADAPTIVE_MODE),
+            app.SMART_ADAPTIVE_MODE,
+        )
+
+    def test_interval_defaults_remain_mode_specific(self):
+        self.assertEqual(engine.DEFAULT_FIXED_INTERVAL, 120.0)
+        config = engine.AdaptiveSamplingConfig()
+        self.assertEqual(config.minimum_interval, 2.0)
+        self.assertEqual(config.maximum_interval, 60.0)
+        self.assertEqual(config.initial_interval, 5.0)
+
+
+class SamplingModeUiTests(unittest.TestCase):
+    def test_fixed_mode_shows_only_fixed_settings(self):
+        import app
+
+        self.assertEqual(
+            app.sampling_mode_visibility(app.FIXED_INTERVAL_MODE),
+            (True, False),
+        )
+
+    def test_smart_mode_shows_only_smart_settings(self):
+        import app
+
+        self.assertEqual(
+            app.sampling_mode_visibility(app.SMART_ADAPTIVE_MODE),
+            (False, True),
+        )
+
+    def test_switching_modes_refreshes_visible_settings_without_resetting_values(self):
+        import app
+
+        owner = type("SamplingModeOwner", (), {})()
+        owner.mode_var = mock.Mock()
+        owner.mode_hint_var = mock.Mock()
+        owner.fixed_settings = mock.Mock()
+        owner.adaptive_settings = mock.Mock()
+        owner.interval_entry = mock.Mock()
+
+        owner.mode_var.get.return_value = app.SMART_ADAPTIVE_MODE
+        app.BrightnessApp._refresh_sampling_mode(owner)
+        owner.fixed_settings.pack_forget.assert_called_once_with()
+        owner.adaptive_settings.pack.assert_called_once_with(fill="x")
+        owner.interval_entry.configure.assert_not_called()
+
+        owner.fixed_settings.reset_mock()
+        owner.adaptive_settings.reset_mock()
+        owner.interval_entry.reset_mock()
+        owner.mode_var.get.return_value = app.FIXED_INTERVAL_MODE
+        app.BrightnessApp._refresh_sampling_mode(owner)
+        owner.adaptive_settings.pack_forget.assert_called_once_with()
+        owner.fixed_settings.pack.assert_called_once_with(fill="x")
+        owner.interval_entry.configure.assert_called_once_with(state="normal")
+
+    def test_hidden_mode_values_are_not_used_by_start_validation(self):
+        import app
+
+        self.assertEqual(
+            app.sampling_mode_visibility(app.SMART_ADAPTIVE_MODE),
+            (False, True),
+        )
+        self.assertEqual(
+            app.sampling_mode_visibility(app.FIXED_INTERVAL_MODE),
+            (True, False),
+        )
+
+    def test_mode_help_matches_selected_mode(self):
+        import app
+
+        self.assertIn(
+            "configured schedule",
+            app.sampling_mode_description(app.FIXED_INTERVAL_MODE),
+        )
+        self.assertIn(
+            "configured limits",
+            app.sampling_mode_description(app.SMART_ADAPTIVE_MODE),
+        )
+
+
+class AdaptiveSamplingTests(unittest.TestCase):
+    @staticmethod
+    def percentile(values, percentile):
+        ordered = sorted(values)
+        position = (len(ordered) - 1) * percentile
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        fraction = position - lower
+        return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+    def test_smart_default_maximum_interval_is_sixty_seconds(self):
+        self.assertEqual(engine.AdaptiveSamplingConfig().maximum_interval, 60.0)
+
+    def test_stable_environment_progressively_reaches_maximum(self):
+        controller = engine.AdaptiveSamplingController()
+        intervals = [
+            controller.update(100.0, timestamp=float(index)).interval
+            for index in range(20)
+        ]
+
+        self.assertEqual(intervals[0], 5.0)
+        self.assertEqual(intervals, sorted(intervals))
+        self.assertEqual(intervals[-1], 60.0)
+        self.assertEqual(controller.state, "highly stable")
+
+    def test_optional_one_hundred_twenty_second_cap_remains_supported(self):
+        controller = engine.AdaptiveSamplingController(
+            engine.AdaptiveSamplingConfig(maximum_interval=120.0)
+        )
+        timestamp = 0.0
+        while controller.current_interval < 120.0:
+            decision = controller.update(100.0, timestamp=timestamp)
+            timestamp += decision.interval
+
+        self.assertEqual(decision.interval, 120.0)
+
+    def test_sudden_change_quickly_enters_responsive_state(self):
+        controller = engine.AdaptiveSamplingController()
+        for index in range(10):
+            controller.update(80.0, timestamp=float(index))
+        before = controller.current_interval
+
+        decision = controller.update(220.0, timestamp=10.0)
+
+        self.assertLess(decision.interval, before)
+        self.assertEqual(decision.interval, 2.0)
+        self.assertEqual(decision.state, "rapidly changing")
+        self.assertGreater(decision.trend, 0.0)
+
+    def test_noise_does_not_change_interval_or_history_state(self):
+        controller = engine.AdaptiveSamplingController()
+        for index, value in enumerate((100.0, 101.0, 99.0, 100.5, 98.5)):
+            decision = controller.update(value, timestamp=float(index))
+
+        self.assertEqual(decision.state, "relatively stable")
+        self.assertGreaterEqual(decision.interval, 5.0)
+        self.assertEqual(len(controller.history), 5)
+
+    def test_invalid_measurements_do_not_enter_history(self):
+        controller = engine.AdaptiveSamplingController()
+        controller.update(100.0, timestamp=0.0)
+        before = controller.current_interval
+
+        decision = controller.update(float("nan"), timestamp=1.0)
+
+        self.assertFalse(decision.valid)
+        self.assertEqual(len(controller.history), 1)
+        self.assertEqual(controller.current_interval, before)
+        self.assertEqual(decision.filtered_value, 100.0)
+
+    def test_interval_limits_are_respected_during_change_and_recovery(self):
+        config = engine.AdaptiveSamplingConfig(
+            initial_interval=5.0,
+            minimum_interval=3.0,
+            maximum_interval=20.0,
+        )
+        controller = engine.AdaptiveSamplingController(config)
+        values = [20.0, 220.0, 20.0, 220.0] * 8
+        intervals = [
+            controller.update(value, timestamp=float(index)).interval
+            for index, value in enumerate(values)
+        ]
+
+        self.assertGreaterEqual(min(intervals), 3.0)
+        self.assertLessEqual(max(intervals), 20.0)
+
+    def test_gradual_transition_is_not_treated_as_camera_failure(self):
+        controller = engine.AdaptiveSamplingController()
+        decisions = [
+            controller.update(60.0 + index * 2.0, timestamp=float(index * 5))
+            for index in range(10)
+        ]
+
+        self.assertTrue(all(decision.valid for decision in decisions))
+        self.assertTrue(all(decision.filtered_value is not None for decision in decisions))
+        self.assertNotEqual(decisions[-1].state, "rapidly changing")
+
+    def test_first_sample_has_no_stability_claim(self):
+        decision = engine.AdaptiveSamplingController().update(100.0, timestamp=0.0)
+
+        self.assertEqual(decision.state, "unknown")
+        self.assertEqual(decision.stability_score, 0.0)
+
+    def test_repeated_transitions_reenter_minimum_interval(self):
+        controller = engine.AdaptiveSamplingController()
+        for index in range(20):
+            controller.update(100.0, timestamp=float(index))
+
+        changed = controller.update(220.0, timestamp=20.0)
+        recovered = controller.update(220.0, timestamp=22.0)
+        changed_back = controller.update(20.0, timestamp=24.0)
+
+        self.assertEqual(changed.interval, 2.0)
+        self.assertEqual(recovered.interval, 2.0)
+        self.assertEqual(changed_back.interval, 2.0)
+        self.assertEqual(changed_back.state, "rapidly changing")
+
+    def test_stability_score_reflects_noise_after_noise_adaptation(self):
+        controller = engine.AdaptiveSamplingController()
+        decisions = [
+            controller.update(value, timestamp=float(index))
+            for index, value in enumerate((100, 112, 94, 108, 97, 103))
+        ]
+
+        self.assertLess(decisions[-1].stability_score, 1.0)
+        self.assertGreaterEqual(decisions[-1].stability_score, 0.0)
+
+    def test_worst_case_change_immediately_after_max_interval(self):
+        controller = engine.AdaptiveSamplingController()
+        timestamp = 0.0
+        while controller.current_interval < controller.config.maximum_interval:
+            decision = controller.update(100.0, timestamp=timestamp)
+            timestamp += decision.interval
+
+        event_timestamp = timestamp + 0.001
+        detection_timestamp = timestamp + controller.current_interval
+        decision = controller.update(220.0, timestamp=detection_timestamp)
+
+        self.assertEqual(controller.current_interval, 2.0)
+        self.assertEqual(decision.state, "rapidly changing")
+        self.assertAlmostEqual(
+            detection_timestamp - event_timestamp,
+            controller.config.maximum_interval - 0.001,
+            places=3,
+        )
+
+    def test_rapid_change_holds_minimum_interval_for_confirmation_samples(self):
+        controller = engine.AdaptiveSamplingController()
+        timestamp = 0.0
+        while controller.current_interval < controller.config.maximum_interval:
+            decision = controller.update(100.0, timestamp=timestamp)
+            timestamp += decision.interval
+
+        timestamp += controller.current_interval
+        controller.update(220.0, timestamp=timestamp)
+        confirmation_intervals = []
+        for _ in range(5):
+            timestamp += controller.current_interval
+            decision = controller.update(220.0, timestamp=timestamp)
+            confirmation_intervals.append(decision.interval)
+
+        self.assertEqual(confirmation_intervals, [2.0] * 5)
+
+    def test_percentile_latency_calculation_is_deterministic(self):
+        latencies = [0.0, 15.0, 30.0, 45.0, 60.0]
+
+        self.assertEqual(self.percentile(latencies, 0.5), 30.0)
+        self.assertEqual(self.percentile(latencies, 0.95), 57.0)
+        self.assertEqual(self.percentile(latencies, 1.0), 60.0)
 
 
 class WorkerLifecycleTests(unittest.TestCase):
@@ -568,6 +884,45 @@ class WorkerLifecycleTests(unittest.TestCase):
 
         set_brightness.assert_not_called()
         ramp.assert_not_called()
+
+    def test_smart_worker_uses_adaptive_interval_without_battery_multiplier(self):
+        import app
+
+        owner = self.make_worker_owner()
+        owner.stop_event = threading.Event()
+        owner.power_aware_interval = mock.Mock(return_value=999.0)
+
+        def sample(_camera, **_kwargs):
+            owner.stop_event.set()
+            return 100.0
+
+        with mock.patch.object(app.engine, "sample_camera", side_effect=sample), \
+             mock.patch.object(
+                 app.engine,
+                 "BrightnessController",
+                 return_value=mock.Mock(update=lambda value: 30),
+             ), \
+             mock.patch.object(app.engine, "set_brightness"), \
+             mock.patch.object(app.engine, "AdaptiveSamplingController") as adaptive_class:
+            adaptive = adaptive_class.return_value
+            adaptive.current_interval = 5.0
+            adaptive.update.return_value = app.engine.AdaptiveSamplingDecision(
+                interval=5.0,
+                state="unknown",
+                trend=0.0,
+                stability_score=0.0,
+                filtered_value=100.0,
+            )
+            owner.worker(
+                0,
+                120.0,
+                1,
+                owner.stop_event,
+                "Smart Adaptive",
+                app.engine.AdaptiveSamplingConfig(),
+            )
+
+        owner.power_aware_interval.assert_not_called()
 
 
 if __name__ == "__main__":
