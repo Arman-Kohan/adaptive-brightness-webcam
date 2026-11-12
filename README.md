@@ -6,252 +6,230 @@
 
 <p align="center">
   <strong>Comfortable screen brightness, automatically tuned to your room.</strong><br>
-  A lightweight Windows app that uses short webcam light samples to adjust display brightness.
+  A lightweight Windows app that samples ambient light through your webcam and adjusts your laptop's display brightness to match — verified on the actual display, every time.
 </p>
 
 <p align="center">
-  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases"><img src="https://img.shields.io/github/v/release/Arman-Kohan/adaptive-brightness-webcam?display_name=tag&style=flat-square&color=0A6CFF" alt="Latest release"></a>
-  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/actions/workflows/build-check.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arman-Kohan/adaptive-brightness-webcam/build-check.yml?branch=main&style=flat-square&label=build" alt="Build status"></a>
-  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Arman-Kohan/adaptive-brightness-webcam?style=flat-square" alt="MIT License"></a>
-  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam"><img src="https://img.shields.io/github/stars/Arman-Kohan/adaptive-brightness-webcam?style=flat-square" alt="GitHub stars"></a>
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/release-v1.1.0-blue" alt="Release v1.1.0"></a>
+  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/actions/workflows/build-check.yml"><img src="https://github.com/Arman-Kohan/adaptive-brightness-webcam/actions/workflows/build-check.yml/badge.svg" alt="Build status"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6" alt="Windows 10 | 11">
+  <img src="https://img.shields.io/badge/python-3.11%2B-3776AB" alt="Python 3.11+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
 </p>
 
 <p align="center">
-  <a href="README.fa.md">راهنمای فارسی</a>
-  ·
-  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases">Download</a>
-  ·
-  <a href="https://github.com/Arman-Kohan/adaptive-brightness-webcam/issues">Suggest an improvement</a>
+  <a href="README.fa.md">🇮🇷 این راهنما به فارسی</a>
 </p>
 
-## Why Adaptive Brightness Webcam?
+---
 
-Most automatic brightness tools either depend on a dedicated light sensor or react too aggressively to noisy camera readings. This project takes a calmer approach: it samples the webcam briefly, analyzes the scene, filters unstable measurements, and changes brightness only when the result is meaningful.
+## Overview
 
-The result is a small, privacy-conscious utility that is especially useful on Windows laptops with built-in displays.
+Most laptops adjust brightness only by hand. Adaptive Brightness Webcam watches the light around you through the built-in webcam and keeps the screen at a comfortable level as your room changes — lights on or off, daylight fading, a lamp switched on in the evening.
 
-## Highlights
+It is designed to be **calm and trustworthy**:
 
-- **Automatic brightness control** based on short webcam samples.
-- **Two sampling modes:** keep a predictable fixed interval or use Smart Adaptive mode, which schedules its own measurements.
-- **Persistent settings:** camera, mode, interval, theme, and tray preferences are saved to `%APPDATA%\Adaptive Brightness Webcam\settings.json` and restored on every launch.
-- **Privacy first:** frames are processed in memory; no images or videos are saved or uploaded.
-- **Stable transitions:** median sampling, exposure calibration, smoothing, deadband, hysteresis, and gradual brightness ramps reduce flicker.
-- **Scene-aware measurement:** analyzes the center 80% of the frame, luminance percentiles, contrast, highlights, and dim-scene behavior.
-- **Simple desktop UI:** test the camera, start or stop automation, and see the latest light estimate and target brightness.
-- **System tray support:** keep automation running quietly in the background.
-- **Windows startup option:** launch automatically when you sign in.
-- **Power-aware behavior:** checks are spaced out further on battery to reduce webcam wakeups.
-- **Light and dark appearance:** follow the Windows theme or switch automatically between day and night.
-- **Portable release:** download and run the Windows executable without installing Python.
+- The webcam wakes only for a split-second measurement and turns off again — it is never held open.
+- Brightness changes are filtered, confirmed, and ramped, so the screen never hunts or flickers.
+- Every brightness change is **applied through WMI and read back from the display**, so what the app reports is what the panel actually shows.
 
-## Download and run
+## Key features
 
-1. Open the [latest Releases](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases).
-2. Download `AdaptiveBrightnessWebcam.exe`, or download `AdaptiveBrightnessWebcam-Windows.zip` for the portable package.
-3. Extract the ZIP if necessary and run `AdaptiveBrightnessWebcam.exe`.
-4. Choose the webcam index. `Camera 0` is usually the built-in webcam.
-5. Click **Test camera**, choose a sampling mode, and click **Start automation**.
+- **Smart Adaptive mode** — fully autonomous measurement scheduling: frequent checks while your lighting is changing, sparse checks (up to every 2 minutes) in a stable room. No interval settings to tune.
+- **Intermittent camera capture** — one controlled cycle per check: open, discard warm-up frames while auto-exposure settles, capture, release. The camera LED is off between checks.
+- **Verified Windows brightness control** — WMI `WmiSetBrightness` (the same mechanism as the Windows brightness slider) with immediate readback verification, retries with backoff, and honest *requested / applied / verified* state tracking.
+- **Field-calibrated comfort curve** — tuned over several rounds of real-world testing on actual hardware, with scene compensation that is capped so bright rooms cannot overshoot.
+- **Anti-flicker gating** — stabilization period after Start, a deadband for insignificant changes, confirmation for moderate changes, and rate/step limits.
+- **Persistent settings** — camera, mode, interval, theme, and tray preferences survive restarts and Windows reboots.
+- **System tray** — runs quietly in the tray with quick controls; optional launch with Windows.
+- **Private by design** — frames are processed in memory only. Nothing is recorded, saved, or sent anywhere. No account, no network, no telemetry.
 
-No Python installation, administrator privileges, or installer is required for the packaged release.
+## Download and installation
 
-### Recommended first setup
+1. Go to the [**v1.1.0 release**](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases/tag/v1.1.0).
+2. Download either:
+   - `AdaptiveBrightnessWebcam.exe` — the standalone application, or
+   - `AdaptiveBrightnessWebcam-Windows.zip` — the same executable with this README and the app icon.
+3. Run `AdaptiveBrightnessWebcam.exe`. There is nothing to install: no Python, no dependencies, no administrator rights.
 
-For a comfortable starting point:
+> **Windows SmartScreen:** the executable is not code-signed, so Windows may show a warning on first run. Choose **More info → Run anyway**. This is expected for unsigned open-source builds; you can also build the executable yourself from source (see [Development](#development)).
 
-- Keep the webcam uncovered and pointed toward the room.
-- Avoid pointing it directly at a lamp or a bright window.
-- New installations start with **Smart Adaptive**, which checks frequently while your lighting is changing and backs off to sparse checks (up to two minutes apart) when the room is stable — there are no interval limits to configure. **Fixed Interval** remains available with its existing 120-second default.
-- Use **Test camera** before starting automation.
-- If you use an external monitor, verify that it supports Windows brightness control.
+Upgrading from an older version: just replace the old `.exe` with the new one. Your settings are kept (see below). If the new file lives in a different folder and you use *Launch with Windows*, toggle that option off and on once so Windows points at the new location.
+
+## First run
+
+1. **Select your camera** — `0` is usually the built-in webcam.
+2. Click **Test camera**. You should see an ambient-light reading and the brightness it maps to.
+3. Leave the mode on **Smart Adaptive** and click **Start automation**.
+
+Your settings are saved automatically to `%APPDATA%\Adaptive Brightness Webcam\settings.json` and restored on the next launch — including after a Windows restart. Corrupted or outdated settings files are handled gracefully: invalid values fall back to defaults field by field, and your valid choices are never overwritten at startup.
 
 ## How it works
 
-For each check, the app:
+Each measurement cycle:
 
-1. Opens the selected webcam through OpenCV and DirectShow.
-2. Lets the camera warm up briefly so auto-exposure can settle.
-3. Captures five valid samples and uses the median measurement.
-4. Analyzes the center 80% of the frame using luminance percentiles (`p25`, `p50`, `p75`, `p90`).
-5. Accounts for scene contrast, near-white highlights, supported exposure values, and dim-scene patterns.
-6. Maps the result through a configurable comfort curve.
-7. Applies smoothing and hysteresis to avoid flicker.
-8. Sends the target to the internal display with WMI (`WmiSetBrightness`, the same mechanism as the Windows brightness slider) and reads the panel back to verify the change actually happened; failures are retried with backoff, and the legacy `powercfg` path remains only as an unverified fallback for machines without the WMI brightness classes. Larger changes are ramped gradually.
-9. Releases the webcam immediately after sampling, in both modes. Each check is one controlled cycle — open, warm-up frames discarded while auto-exposure settles, five captured frames, median, release — so the camera LED is off while the app waits for the next scheduled check, which in a stable Smart Adaptive room can be two minutes later.
+1. Opens the webcam and discards the first frames while auto-exposure settles, so an unstabilized sensor is never trusted.
+2. Captures 5 frames and summarizes each with robust statistics (median, percentiles, highlights, dark fraction) that resist glare and outliers.
+3. Compensates for camera auto-exposure changes, then converts the ambient estimate to a target brightness with the calibration curve.
+4. Applies bounded scene compensation for high-contrast rooms (for example, a bright window behind a darker desk).
+5. Smooths the result (EMA), suppresses insignificant changes (deadband and hysteresis), and passes it through the anti-flicker gate.
+6. Applies the change to the display through WMI — larger changes are ramped gradually — and **reads the panel back to verify** the new level actually took effect.
+7. Releases the webcam immediately. The camera stays off until the next scheduled check.
 
-In **Smart Adaptive** mode, `AdaptiveSamplingController` schedules every
-measurement autonomously — there are no user-configured interval limits. It
-keeps a short history of valid observations, filters the signal with an EMA,
-estimates camera noise with a rolling median/MAD, and tracks the robust
-(Theil–Sen) rate of change. When light is changing rapidly, or the current
-brightness is far from the desired one, the interval drops to the internal
-5-second minimum and stays there for confirmation samples; when consecutive
-observations prove the room is stable, the interval grows geometrically up to
-the internal 120-second maximum, so a stable room is checked only a few dozen
-times an hour. A sudden change that happens just after a sample is therefore
-detected within at most 120 seconds and then re-checked every 5 seconds until
-the new level settles. Invalid samples never enter the history.
+### Smart Adaptive scheduling
 
-Brightness changes in Smart Adaptive mode also pass through
-`BrightnessChangeGate`: the first measurements after Start are a
-stabilization period (nothing is applied), insignificant changes inside the
-deadband are ignored, moderate changes need confirmation from consecutive
-samples, successive changes are rate- and magnitude-limited, and only large
-changes apply immediately.
+Smart Adaptive decides *when* to measure on its own. It tracks a smoothed ambient signal, a robust noise estimate, and a trend estimate, and combines them with feedback from how far the current brightness is from the target:
 
-Independently of mode, the whole brightness pipeline is bounded by a comfort
-ceiling: scene boost, dim-scene boost, and exposure compensation together may
-never push the effective brightness more than a small allowance above the
-calibrated curve for the measured ambient, and that allowance tapers to zero
-as the measured ambient approaches the top of the range. An already-bright
-room therefore cannot be boosted far past its calibrated target. The curve
-itself follows the user's on-device comfort data (100 -> 30%, 150 -> 45%,
-177.8 -> 54%, 200 -> 61%, 240 -> 75%), and at bright levels the boost
-allowance is zero, so the effective target there is the curve itself.
-Fixed Interval mode bypasses the scheduler and gate and retains the existing
-scheduling behavior.
+| Room behavior | Scheduling response |
+| --- | --- |
+| Rapid, large light change | Interval drops toward the 5-second floor and stays fast until the change is confirmed over several samples |
+| Gradual change (sunset, dimming lamp) | Interval shrinks moderately (×0.6) |
+| Stable light | Interval grows (×1.4) up to a 2-minute ceiling — about 40 camera activations per hour instead of 720 at a fixed 5-second pace |
 
-The displayed camera value is a relative, camera-derived luminance estimate—not a physical lux measurement. Different cameras, framing, exposure, and white balance can produce different values in the same room.
+Intervals are bounded internally between **5 and 120 seconds** and are not user-configurable — there are no minimum/maximum settings to get wrong. In a stable room the trade-off is deliberate: a sudden light change can take up to ~2 minutes to notice, in exchange for a camera that is almost never on. On battery power, *Fixed Interval* mode additionally stretches its interval (×2.5, minimum 5 minutes).
 
-## Settings
+### Calibration
 
-| Setting | What it does |
-|---|---|
-| **Camera** | Selects the webcam index used for sampling. |
-| **Sampling mode** | **Fixed Interval** preserves a user-selected schedule. **Smart Adaptive** schedules measurements automatically (internal 5–120 second bounds) based on lighting stability and rate of change. |
-| **Check interval** | Fixed Interval schedule. Minimum: 30 seconds. The default is 120 seconds. This control is shown only in Fixed Interval mode. |
-| **Settings file** | Camera, sampling mode, fixed interval, theme, and tray preferences persist in `%APPDATA%\Adaptive Brightness Webcam\settings.json` and are restored automatically on launch. Corrupted files fall back to defaults; interval keys written by older versions are ignored. |
-| **Appearance** | **Auto** follows day/night; **Windows** follows the system theme. |
-| **Launch with Windows** | Starts the app automatically when you sign in. |
-| **Close to tray** | Hides the window while leaving the app running in the system tray. |
+The ambient-to-brightness curve covers the measured range 8–240 and maps to 10–75% brightness. It was calibrated against comfort data points collected on real hardware over several releases:
 
-When running on battery, Fixed Interval mode automatically increases the effective wait between checks. Smart Adaptive mode uses its internal interval bounds directly so a sudden change is not delayed by a second, hidden multiplier. Smart Adaptive also shows the current interval, stability state, trend, and whether the next wait is increasing or decreasing.
+| Ambient reading | 20 | 40 | 100 | 150 | 177.8 | 200 | 240 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Screen brightness | 12% | 15% | 30% | 45% | 54% | 61% | 75% |
 
-## Privacy and compatibility
+Two safeguards keep the *effective* target faithful to this curve:
 
-- The webcam is active only during a short warm-up and sampling window. The camera privacy indicator may turn on during that time.
-- The DirectShow backend may not honor OpenCV's optional read-timeout property; capture is released after each sample, but a device driver that blocks inside `read()` can still delay shutdown until the driver returns.
-- Frames are processed in memory and are not saved, uploaded, or transmitted by this application.
-- Diagnostic logs are written to `%USERPROFILE%\.adaptive-brightness-webcam.log`.
-- Brightness control works best with internal laptop displays.
-- Some external monitors, docks, virtual displays, and vendor-specific drivers do not expose brightness control through Windows.
-- The app requires Windows 10/11, a camera permission, a valid webcam index, and an internal display that exposes the standard WMI brightness controls (most laptops do).
+- **Scene compensation is capped.** High-contrast scenes may raise the effective ambient above the raw measurement, but the total boost from all modifiers (scene boost, dim-scene boost, exposure compensation) is limited in brightness points — up to 15 points in dim/mid light, tapering to **zero** at bright levels, where an already-bright measurement needs no help.
+- **Verification closes the loop.** A target is only reported as applied when the display readback confirms it (see below).
+
+<details>
+<summary>Anti-flicker gate details</summary>
+
+In Smart Adaptive mode every proposed brightness also passes `BrightnessChangeGate`:
+
+- The first 3 samples after Start are stabilization-only; nothing is applied.
+- Changes smaller than 4 points are ignored (deadband).
+- Moderate changes need 2 consecutive confirming samples.
+- Successive changes are rate-limited (20 s) and step-limited (20 points).
+- Large changes (≥ 12 points, e.g. lights switched on) apply immediately.
+</details>
+
+### Windows brightness control and verification
+
+Brightness is set through **WMI** — `WmiMonitorBrightnessMethods.WmiSetBrightness`, the same interface the Windows brightness slider uses for internal laptop displays — and read back through `WmiMonitorBrightness.CurrentBrightness` in the same operation.
+
+The application layer (`BrightnessApplier`) keeps three states separate: **requested**, **applied** (API accepted), and **verified** (readback matches). Behavior:
+
+- Results are reported as `verified`, `applied_unverified` (API accepted but the machine offers no readback), or `failed` — never silently assumed.
+- Transient failures and readback mismatches are retried up to 3 times with backoff (0.3 s, 0.6 s).
+- All applications are serialized on a single lock, and newer requests supersede stale in-flight ones, so rapid measurements cannot produce conflicting commands and ramps abort instead of overriding.
+- If the WMI brightness classes do not exist on a machine, the legacy `powercfg` power-plan method is used as a fallback and its results are labeled unverified.
+- The GUI progress indicator reflects the **applied** brightness, and if a change cannot be applied, the app says so ("Brightness not applied") instead of showing a value the screen does not have.
+
+Every attempt is written to the diagnostic log as one structured line, for example:
+
+```
+brightness_apply target=54 previous=48 method=wmi attempt=1 status=accepted readback=54 result=verified
+```
+
+## Fixed Mode vs. Smart Adaptive
+
+| | Fixed Interval | Smart Adaptive |
+| --- | --- | --- |
+| Measurement timing | Every interval you set (30 s or more) | Autonomous, 5–120 s based on lighting stability |
+| Camera use | One brief capture per interval | One brief capture per self-scheduled check |
+| Anti-flicker gate | No | Yes (stabilization, deadband, confirmation, rate/step limits) |
+| Best for | Predictable, simple behavior | Set-and-forget everyday use |
+| Battery behavior | Interval stretches automatically on battery | Already sparse; unchanged |
+
+## System requirements
+
+- Windows 10 or Windows 11 (64-bit).
+- A laptop with an internal display that exposes the standard WMI brightness controls (most do) and a working webcam with camera permission granted.
+- The standalone executable needs nothing else. Running from source needs Python 3.11+ (see [Development](#development)).
+
+External monitors usually do **not** accept WMI brightness commands; the app targets the internal laptop display.
 
 ## Troubleshooting
 
-### The camera test fails
+**The screen brightness does not change.**
+Check the diagnostic log (below) for `brightness_apply … result=` lines: `verified` means the panel confirmed the change. If you see `failed` or repeated readback mismatches, run the hardware diagnostic (next section). Some vendor utilities and GPU "adaptive brightness" features can fight external control — try disabling those. Also make sure no other brightness tool is running.
 
-Try camera index `1` or `2`, check Windows camera permissions, and close other apps that may be using the webcam. The selected camera must be available through the DirectShow backend.
+**Windows says the app is unrecognized (SmartScreen).**
+Expected for unsigned builds: **More info → Run anyway**, or build from source.
 
-### Brightness does not change
+**The camera light turns on briefly now and then.**
+That is the measurement cycle working as designed — see [Privacy and camera behavior](#privacy-and-camera-behavior). In a stable Smart Adaptive room it happens at most every 2 minutes.
 
-Many external monitors do not accept software brightness commands from Windows. Check the display's hardware controls or vendor software, then inspect `%USERPROFILE%\.adaptive-brightness-webcam.log`: every brightness attempt is logged as a structured `brightness_apply` line with target, method, attempt, readback, and result. To verify on the hardware itself, run `python brightness_diagnostic.py` (or with the source release) — it applies test values through the same verified path, reads the panel back after each step, and restores your original brightness.
+**Wrong camera or "Camera unavailable".**
+Try the next camera index (0, 1, 2…), close other apps that may hold the webcam (Teams, Zoom, Camera), and check Windows *Settings → Privacy → Camera* allows desktop apps.
 
-### The response is too slow or too bright
+**Settings reset after restart.**
+Settings live in `%APPDATA%\Adaptive Brightness Webcam\settings.json`. If the file was deleted or the app is run under a different Windows user, defaults return. Note that very old versions stored nothing at all — set your preferences once with this version and they will persist.
 
-Reduce the fixed interval, make sure the camera is facing the room, and adjust `BrightnessConfig` in `adaptive_brightness.py`. Fixed Interval battery mode intentionally adds extra delay; Smart Adaptive uses its internal bounds. The brightness curve follows the maintainer's on-device comfort data: about 100 -> 30%, 150 -> 45%, 177.8 -> 54%, 200 -> 61%.
+## Diagnostics and logs
 
-## Manual webcam validation
+- **Log file:** `%USERPROFILE%\.adaptive-brightness-webcam.log` — includes sampling decisions and one structured `brightness_apply` line per brightness attempt (target, previous value, method, attempt number, API status, readback, final result).
+- **Hardware diagnostic:** from a source checkout, run:
 
-These checks require a real Windows webcam and display. They are not part of the
-automated test suite, and passing them depends on camera exposure behavior,
-lighting, and whether the display accepts Windows brightness commands.
+  ```powershell
+  python brightness_diagnostic.py --yes
+  ```
 
-1. Select the webcam, click **Test camera**, and confirm that a numeric ambient
-   value and target brightness are shown. Check that the camera privacy indicator
-   turns off after the short sample.
-2. Select **Smart Adaptive**, start automation, and leave the room stable
-   for at least 10 minutes. Confirm that the diagnostic interval grows toward
-   120 seconds, the camera LED turns on only for each brief check and off
-   in between, and brightness does not change during the first stabilization
-   samples.
-3. Move from a dark room into a bright room, then repeat from bright to dark.
-   Confirm that the next reading changes the target and that the displayed
-   interval falls to 2 seconds for confirmation samples before growing again.
-4. Turn room lights off and on several times. Confirm meaningful brightness
-   changes occur without rapid oscillation from camera noise.
-5. During gradual daylight change, record the displayed ambient value, trend,
-   stability state, and interval every few minutes. Confirm the values move
-   smoothly rather than jumping on every exposure adjustment.
-6. Pass a hand or object briefly in front of the camera. Confirm that a
-   short-lived shadow may be missed when the camera is sleeping, but if sampled
-   it does not leave the controller stuck at the minimum interval.
-7. Disconnect or disable the camera while automation is running, then restore
-   it. Confirm the app reports a camera warning, remains responsive, and resumes
-   sampling after the device becomes available.
-8. While running, switch between **Fixed Interval** and **Smart Adaptive**.
-   The current run stops explicitly; start automation again to apply the newly
-   selected mode. Verify Fixed Interval retains its configured value, then
-   close and relaunch the app and confirm camera, mode, and interval are
-   restored from the settings file.
-9. Repeat the stable-lighting check on AC power and battery power. Fixed
-   Interval applies its existing battery delay; Smart Adaptive uses its own
-   internal bounds without an additional battery multiplier.
+  It reads the panel through WMI, applies three test values through the same verified path the app uses, reads the panel back after each step, prints PASS/FAIL per step, and restores your original brightness. Exit code 0 means every step was verified on the hardware.
+- **Live state:** the GUI status line shows the current target and, when it differs, the actually applied brightness.
 
-## For developers
+## Privacy and camera behavior
 
-### Requirements
+- Frames are analyzed **in memory only**. No image or video is ever saved, uploaded, or sent over the network. The app makes no network connections at all.
+- The webcam is opened only for the brief measurement cycle (well under a second of capture plus warm-up) and released immediately afterward. Between checks the camera is fully off.
+- **The camera LED lights during capture because of hardware design**: on virtually all laptops the indicator is wired to the sensor's power as a privacy feature. The app neither can nor tries to disable it — the short, infrequent activations in Smart Adaptive mode are how it stays unobtrusive.
 
-- Windows 10 or Windows 11
-- Python 3.10+ recommended
-- A webcam supported by OpenCV
-
-### Run from source
+## Development
 
 ```powershell
-python -m pip install -r requirements.txt
+git clone https://github.com/Arman-Kohan/adaptive-brightness-webcam.git
+cd adaptive-brightness-webcam
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 python app.py
 ```
 
-Run the controller without the graphical interface in Fixed Interval mode:
-
-```powershell
-python adaptive_brightness.py --camera 0 --mode fixed --interval 120
-```
-
-Run the controller with adaptive sampling:
-
-```powershell
-python adaptive_brightness.py --camera 0 --mode smart
-```
-
-The CLI defaults to Smart Adaptive mode. Use `--mode fixed` explicitly when
-you want the fixed schedule and its 120-second default. The old
-`--minimum-interval` / `--maximum-interval` flags are still accepted for
-backwards compatibility but are ignored: Smart Adaptive has no
-user-configured interval limits.
-
-Take one sample and exit:
-
-```powershell
-python adaptive_brightness.py --camera 0 --once
-```
-
-Run the tests:
+Run the test suite (127 tests):
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Build the Windows executable:
+Build the standalone executable:
 
 ```powershell
-.\build.ps1
+.\build.ps1   # produces dist\AdaptiveBrightnessWebcam.exe
 ```
 
-The build produces `dist\AdaptiveBrightnessWebcam.exe`. The release workflow packages the executable and portable ZIP whenever a `v*` tag is pushed.
+An optional Inno Setup script (`installer.iss`) is included if you prefer a traditional installer.
 
-## Contributing and feedback
+### Project layout
 
-Found a bug, have a calibration idea, or want support for another display or camera setup? Please [open an issue](https://github.com/Arman-Kohan/adaptive-brightness-webcam/issues) with:
+| File | Role |
+| --- | --- |
+| `app.py` | GUI, system tray, background worker, event flow |
+| `adaptive_brightness.py` | Engine: sampling, calibration, controller, scheduler, gate, camera session, verified brightness application |
+| `app_config.py` | Persistent settings (`%APPDATA%`) with validation and graceful recovery |
+| `brightness_diagnostic.py` | On-hardware brightness verification tool |
+| `build.ps1` | PyInstaller build (one-file, windowed, icon) |
+| `tests/` | Unit and integration tests for the engine, GUI logic, scheduling, calibration pipeline, and brightness application |
 
-- Windows version and display type
-- Camera model or camera index
-- What you expected and what happened
-- Relevant log output, with any private information removed
+## Known limitations
 
-If this project is useful to you, consider leaving a **star** on GitHub. It helps the project become more visible and motivates future improvements.
+- The executable is unsigned, so SmartScreen warns on first run.
+- Designed for a single internal laptop display; external monitors generally ignore WMI brightness.
+- In a very stable room, Smart Adaptive may take up to ~2 minutes to react to a sudden light change (the price of sparse camera use).
+- The camera LED necessarily lights during each brief measurement.
+- Laptops whose firmware does not expose WMI brightness fall back to the legacy `powercfg` method, whose results cannot be verified.
 
-## License
+## License and acknowledgments
 
 Released under the [MIT License](LICENSE).
+
+Built with Python, OpenCV, CustomTkinter, Pillow, and pystray. Thanks to everyone who reported issues and tested builds on real hardware — the calibration curve and the WMI verification layer both exist because of that feedback.
