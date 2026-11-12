@@ -76,7 +76,7 @@ For each check, the app:
 5. Accounts for scene contrast, near-white highlights, supported exposure values, and dim-scene patterns.
 6. Maps the result through a configurable comfort curve.
 7. Applies smoothing and hysteresis to avoid flicker.
-8. Sends the target to Windows with `powercfg`; larger changes are ramped gradually.
+8. Sends the target to the internal display with WMI (`WmiSetBrightness`, the same mechanism as the Windows brightness slider) and reads the panel back to verify the change actually happened; failures are retried with backoff, and the legacy `powercfg` path remains only as an unverified fallback for machines without the WMI brightness classes. Larger changes are ramped gradually.
 9. Releases the webcam immediately after sampling, in both modes. Each check is one controlled cycle — open, warm-up frames discarded while auto-exposure settles, five captured frames, median, release — so the camera LED is off while the app waits for the next scheduled check, which in a stable Smart Adaptive room can be two minutes later.
 
 In **Smart Adaptive** mode, `AdaptiveSamplingController` schedules every
@@ -104,8 +104,10 @@ ceiling: scene boost, dim-scene boost, and exposure compensation together may
 never push the effective brightness more than a small allowance above the
 calibrated curve for the measured ambient, and that allowance tapers to zero
 as the measured ambient approaches the top of the range. An already-bright
-room therefore cannot be boosted far past its calibrated target (a measured
-173 maps to 58% plain and at most ~61% with scene compensation).
+room therefore cannot be boosted far past its calibrated target. The curve
+itself follows the user's on-device comfort data (100 -> 30%, 150 -> 45%,
+177.8 -> 54%, 200 -> 61%, 240 -> 75%), and at bright levels the boost
+allowance is zero, so the effective target there is the curve itself.
 Fixed Interval mode bypasses the scheduler and gate and retains the existing
 scheduling behavior.
 
@@ -133,7 +135,7 @@ When running on battery, Fixed Interval mode automatically increases the effecti
 - Diagnostic logs are written to `%USERPROFILE%\.adaptive-brightness-webcam.log`.
 - Brightness control works best with internal laptop displays.
 - Some external monitors, docks, virtual displays, and vendor-specific drivers do not expose brightness control through Windows.
-- The app requires Windows 10/11, a camera permission, a valid webcam index, and a display that accepts the Windows `powercfg` brightness commands.
+- The app requires Windows 10/11, a camera permission, a valid webcam index, and an internal display that exposes the standard WMI brightness controls (most laptops do).
 
 ## Troubleshooting
 
@@ -143,11 +145,11 @@ Try camera index `1` or `2`, check Windows camera permissions, and close other a
 
 ### Brightness does not change
 
-Many external monitors do not accept software brightness commands from Windows. Check the display's hardware controls or vendor software, then inspect `%USERPROFILE%\.adaptive-brightness-webcam.log` for `powercfg` errors.
+Many external monitors do not accept software brightness commands from Windows. Check the display's hardware controls or vendor software, then inspect `%USERPROFILE%\.adaptive-brightness-webcam.log`: every brightness attempt is logged as a structured `brightness_apply` line with target, method, attempt, readback, and result. To verify on the hardware itself, run `python brightness_diagnostic.py` (or with the source release) — it applies test values through the same verified path, reads the panel back after each step, and restores your original brightness.
 
 ### The response is too slow or too bright
 
-Reduce the fixed interval, make sure the camera is facing the room, and adjust `BrightnessConfig` in `adaptive_brightness.py`. Fixed Interval battery mode intentionally adds extra delay; Smart Adaptive uses its internal bounds. The brightness curve is calibrated so an ambient reading of about 170.9 maps to 57% brightness.
+Reduce the fixed interval, make sure the camera is facing the room, and adjust `BrightnessConfig` in `adaptive_brightness.py`. Fixed Interval battery mode intentionally adds extra delay; Smart Adaptive uses its internal bounds. The brightness curve follows the maintainer's on-device comfort data: about 100 -> 30%, 150 -> 45%, 177.8 -> 54%, 200 -> 61%.
 
 ## Manual webcam validation
 
