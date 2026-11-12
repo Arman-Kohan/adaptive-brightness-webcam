@@ -79,9 +79,9 @@
 | گزینه | توضیح |
 |---|---|
 | **Camera** | شماره وب‌کمی که برای نمونه‌برداری استفاده می‌شود. |
-| **Sampling mode** | حالت **Fixed Interval** برنامه‌ریزی ثابت را حفظ می‌کند. حالت **Smart Adaptive** فاصله را به‌صورت خودکار بین محدوده‌های قابل تنظیم تغییر می‌دهد. |
+| **Sampling mode** | حالت **Fixed Interval** برنامه‌ریزی ثابت را حفظ می‌کند. حالت **Smart Adaptive** فاصله اندازه‌گیری را به‌صورت کاملاً خودکار و بر اساس پایداری و نرخ تغییر نور تعیین می‌کند و هیچ محدوده قابل تنظیمی ندارد. |
 | **Check interval** | تنظیم فاصله در حالت Fixed Interval؛ حداقل ۳۰ ثانیه و مقدار پیش‌فرض ۱۲۰ ثانیه. این گزینه فقط در حالت Fixed Interval نمایش داده می‌شود. |
-| **Smart Mode Limits** | حداقل و حداکثر فاصله در حالت Smart Adaptive؛ پیش‌فرض‌ها حداقل ۲ ثانیه، حداکثر ۶۰ ثانیه و فاصله شروع ۵ ثانیه هستند. این گزینه‌ها فقط در حالت Smart Adaptive نمایش داده می‌شوند. |
+| **Settings file** | تنظیمات دوربین، حالت نمونه‌برداری، فاصله ثابت، تم و رفتار سینی سیستم در فایل settings.json در پوشه داده کاربر ویندوز ذخیره می‌شود و پس از هر بار اجرا — حتی پس از راه‌اندازی مجدد ویندوز — به‌صورت خودکار بازیابی می‌شود. |
 | **Appearance** | حالت **Auto** بر اساس روز و شب تغییر می‌کند؛ حالت **Windows** از تم سیستم پیروی می‌کند. |
 | **Launch with Windows** | برنامه را هنگام ورود به ویندوز اجرا می‌کند. |
 | **Close to tray** | هنگام بستن پنجره، برنامه را در System Tray فعال نگه می‌دارد. |
@@ -138,7 +138,7 @@ python adaptive_brightness.py --camera 0 --mode fixed --interval 120
 اجرای موتور در حالت Smart Adaptive:
 
 ```powershell
-python adaptive_brightness.py --camera 0 --mode smart --minimum-interval 2 --maximum-interval 60
+python adaptive_brightness.py --camera 0 --mode smart
 ```
 
 نمونه‌برداری یک‌باره و خروج:

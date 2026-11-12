@@ -5,6 +5,7 @@ from collections import deque
 import logging
 import math
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,19 +27,31 @@ logging.basicConfig(
 
 @dataclass(frozen=True)
 class BrightnessConfig:
-    """Calibration and comfort settings for the ambient-light controller."""
+    """Calibration and comfort settings for the ambient-light controller.
+
+    Calibration note (2026-11): the previous power curve (exponent 1.75)
+    combined with the old scene boost (up to +110) pushed a measured
+    ambient value of about 170.9 to roughly 67% brightness, which users
+    experience as unnecessarily bright for that lighting. The curve is now
+    compressive (exponent 0.92, a Weber-Fechner-style response: responsive
+    in dim light, gentle in bright light) and the scene boost is capped
+    lower, so the bare mapping sends 170.9 -> 57% and boosted real-world
+    scenes stay close to that target instead of overshooting it. The
+    mapping stays smooth and monotonic: neighbouring ambient values never
+    differ by more than about 1 brightness point per unit.
+    """
 
     ambient_min: float = 8.0
     ambient_max: float = 240.0
     brightness_min: int = 10
     brightness_max: int = 75
-    curve_exponent: float = 1.75
+    curve_exponent: float = 0.92
     ambient_deadband: float = 3.0
     smoothing_alpha: float = 0.35
     sudden_change_alpha: float = 0.8
     sudden_change_threshold: float = 45.0
     brightness_hysteresis: int = 2
-    scene_boost_max: float = 110.0
+    scene_boost_max: float = 65.0
     scene_spread_start: float = 25.0
     scene_spread_end: float = 95.0
     bright_scene_start: float = 118.0
@@ -82,13 +95,30 @@ class AmbientMeasurement:
     lower_quartile: float | None = None
 
 
+# Internal safety bounds for Smart Adaptive scheduling. These are
+# deliberately NOT user-configurable: Smart Adaptive decides on its own
+# when the next measurement is needed. The minimum keeps camera and CPU
+# usage calm even while light is changing rapidly; the maximum bounds
+# the worst-case latency for detecting a sudden change that happens
+# just after a sample. Earlier versions exposed minimum/maximum
+# intervals in the GUI and CLI; those settings no longer exist and any
+# values stored by old versions are ignored.
+SMART_MIN_INTERVAL = 5.0
+SMART_MAX_INTERVAL = 120.0
+SMART_INITIAL_INTERVAL = 8.0
+
+
 @dataclass(frozen=True)
 class AdaptiveSamplingConfig:
-    """Bounds and sensitivity settings for smart sampling."""
+    """Sensitivity settings for autonomous smart sampling.
 
-    initial_interval: float = 5.0
-    minimum_interval: float = 2.0
-    maximum_interval: float = 60.0
+    Only the signal-processing sensitivity is configurable here. The
+    interval bounds themselves are internal constants
+    (``SMART_MIN_INTERVAL`` / ``SMART_MAX_INTERVAL`` /
+    ``SMART_INITIAL_INTERVAL``) and are exposed read-only below for
+    diagnostics and backwards-compatible readers.
+    """
+
     history_size: int = 12
     ema_alpha: float = 0.35
     sudden_change_alpha: float = 0.82
@@ -98,15 +128,23 @@ class AdaptiveSamplingConfig:
     rapid_delta: float = 28.0
     stable_samples: int = 4
     highly_stable_samples: int = 8
-    increase_factor: float = 1.35
-    decrease_factor: float = 0.45
+    increase_factor: float = 1.4
+    decrease_factor: float = 0.6
+    rapid_hold_samples: int = 3
+
+    @property
+    def minimum_interval(self) -> float:
+        return SMART_MIN_INTERVAL
+
+    @property
+    def maximum_interval(self) -> float:
+        return SMART_MAX_INTERVAL
+
+    @property
+    def initial_interval(self) -> float:
+        return SMART_INITIAL_INTERVAL
 
     def __post_init__(self):
-        if not (
-            0.0 < self.minimum_interval <= self.initial_interval
-            <= self.maximum_interval
-        ):
-            raise ValueError("adaptive intervals must satisfy minimum <= initial <= maximum")
         if self.history_size < 4:
             raise ValueError("history_size must be at least 4")
         if not 0.0 < self.ema_alpha <= 1.0:
@@ -115,6 +153,12 @@ class AdaptiveSamplingConfig:
             raise ValueError("sudden_change_alpha must be in (0, 1]")
         if self.stable_samples < 2 or self.highly_stable_samples < self.stable_samples:
             raise ValueError("stability sample thresholds are invalid")
+        if self.increase_factor <= 1.0:
+            raise ValueError("increase_factor must be greater than 1")
+        if not 0.0 < self.decrease_factor < 1.0:
+            raise ValueError("decrease_factor must be in (0, 1)")
+        if self.rapid_hold_samples < 0:
+            raise ValueError("rapid_hold_samples must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -131,12 +175,49 @@ class AdaptiveSamplingDecision:
 
 
 class AdaptiveSamplingController:
-    """Filter ambient observations and choose the next smart sampling interval.
+    """Autonomously schedule ambient-light measurements.
 
-    The controller uses an EMA for responsiveness, a rolling median/MAD estimate
-    for camera noise, and consecutive evidence before increasing the interval.
-    Invalid observations never enter the history and therefore cannot distort
-    stability or brightness decisions.
+    Algorithm
+    ---------
+    Each valid observation updates three signal estimates:
+
+    * an exponential moving average (EMA) of the ambient value, with a
+      faster alpha after large jumps so real changes are tracked
+      promptly while camera noise is smoothed;
+    * a rolling median/MAD estimate of camera noise, so the stability
+      thresholds adapt to the actual sensor instead of assuming a
+      fixed noise level;
+    * a robust (Theil-Sen) trend in units/second, which distinguishes
+      a genuine brightening/darkening drift from uncorrelated noise.
+
+    From these, every observation is classified:
+
+    * *rapid* -- the noise-adjusted jump or trend is large. The next
+      interval drops straight to ``SMART_MIN_INTERVAL`` and is held
+      there for ``rapid_hold_samples`` confirmation samples, so a real
+      change is re-measured promptly until the new level is confirmed.
+    * *significant* -- a meaningful but not dramatic change, or the
+      caller reports that the current screen brightness is far from
+      the desired one (``brightness_error``). The interval shrinks
+      geometrically (``decrease_factor``).
+    * *stable* -- noise-adjusted deltas, the median step and the
+      projected drift over the next interval are all small, and the
+      brightness error (if reported) is settled. Only *consecutive*
+      stable samples grow the interval, geometrically
+      (``increase_factor``), and early growth is capped until the
+      environment has proven highly stable. A single noisy sample
+      therefore cannot collapse or explode the schedule, and the
+      interval cannot oscillate: growth requires sustained evidence,
+      shrinkage is immediate but bounded below.
+
+    The interval is always clamped to the internal safety bounds
+    [``SMART_MIN_INTERVAL``, ``SMART_MAX_INTERVAL``]. A sudden change
+    that occurs just after a sample is therefore detected at most
+    ``SMART_MAX_INTERVAL`` seconds later, and the rapid path then
+    re-checks within ``SMART_MIN_INTERVAL`` seconds.
+
+    Invalid observations never enter the history and therefore cannot
+    distort stability or brightness decisions.
     """
 
     STATES = ("unknown", "rapidly changing", "moderately changing", "relatively stable", "highly stable")
@@ -151,13 +232,14 @@ class AdaptiveSamplingController:
         self.reset()
 
     def reset(self):
-        self.current_interval = self.config.initial_interval
+        self.current_interval = SMART_INITIAL_INTERVAL
         self.history = deque(maxlen=self.config.history_size)
         self.filtered_value: float | None = None
         self.previous_filtered: float | None = None
         self.previous_timestamp: float | None = None
         self.stable_count = 0
         self.state = "unknown"
+        self._hold_remaining = 0
 
     def _decision(self, valid=True, trend=0.0, score=0.0, direction="holding"):
         return AdaptiveSamplingDecision(
@@ -180,7 +262,12 @@ class AdaptiveSamplingController:
                     slopes.append((right_value - left_value) / elapsed)
         return float(np.median(slopes)) if slopes else 0.0
 
-    def update(self, observation: float | AmbientMeasurement, timestamp: float | None = None):
+    def update(
+        self,
+        observation: float | AmbientMeasurement,
+        timestamp: float | None = None,
+        brightness_error: float | None = None,
+    ):
         raw = observation.value if isinstance(observation, AmbientMeasurement) else observation
         try:
             raw = float(raw)
@@ -229,65 +316,30 @@ class AdaptiveSamplingController:
         history_trend = self._robust_trend()
         robust_delta = max(0.0, raw_delta - noise)
         relative_delta = robust_delta / max(abs(self.previous_filtered), 20.0)
+
+        if brightness_error is not None and math.isfinite(brightness_error):
+            error_significant = abs(brightness_error) >= 8.0
+            error_settled = abs(brightness_error) <= 3.0
+        else:
+            error_significant = False
+            error_settled = True
+
         rapid = robust_delta >= self.config.rapid_delta or abs(trend) >= 8.0
         significant = (
             robust_delta >= max(self.config.significant_delta, noise * 2.5)
             or relative_delta >= 0.18
             or abs(trend) >= 3.0
+            or error_significant
         )
         enough_evidence = len(self.history) >= 3
         stable = (
             enough_evidence
+            and error_settled
             and robust_delta <= max(self.config.stable_delta, noise * 1.5)
             and median_delta <= max(self.config.stable_delta, noise * 1.5)
             and abs(history_trend) * min(self.current_interval, 60.0) < self.config.stable_delta
         )
 
-        if rapid:
-            self.state = "rapidly changing"
-            self.stable_count = 0
-            self.current_interval = self.config.minimum_interval
-            direction = "decreasing"
-        elif len(self.history) < 3:
-            self.state = "unknown"
-            self.stable_count = 0
-            direction = "holding"
-        elif significant:
-            self.state = "moderately changing"
-            self.stable_count = 0
-            self.current_interval = max(
-                self.config.minimum_interval,
-                self.current_interval * 0.70,
-            )
-            direction = "decreasing"
-        elif stable:
-            self.stable_count += 1
-            self.state = (
-                "highly stable"
-                if self.stable_count >= self.config.highly_stable_samples
-                else "relatively stable"
-            )
-            if self.stable_count >= self.config.stable_samples:
-                target = self.config.maximum_interval
-                growth = self.config.increase_factor
-                if self.stable_count < self.config.highly_stable_samples:
-                    target = min(target, self.config.maximum_interval * 0.65)
-                next_interval = min(target, self.current_interval * growth)
-                direction = "increasing" if next_interval > self.current_interval else "holding"
-                self.current_interval = next_interval
-            else:
-                direction = "holding"
-        else:
-            self.state = "moderately changing"
-            self.stable_count = 0
-            direction = "holding"
-
-        self.current_interval = _clamp(
-            self.current_interval,
-            self.config.minimum_interval,
-            self.config.maximum_interval,
-        )
-        self.previous_timestamp = now
         if len(self.history) < 3:
             stability_score = 0.0
         else:
@@ -303,6 +355,64 @@ class AdaptiveSamplingController:
                 0.0,
                 1.0,
             )
+
+        if rapid:
+            self.state = "rapidly changing"
+            self.stable_count = 0
+            self._hold_remaining = self.config.rapid_hold_samples
+            self.current_interval = SMART_MIN_INTERVAL
+            direction = "decreasing"
+        elif self._hold_remaining > 0:
+            # Confirmation period after a rapid change: stay at the
+            # minimum interval until the new level has been re-measured
+            # a few times, even if individual samples already look calm.
+            self._hold_remaining -= 1
+            self.stable_count = 0
+            if self.state != "rapidly changing":
+                self.state = "moderately changing"
+            self.current_interval = SMART_MIN_INTERVAL
+            direction = "holding"
+        elif len(self.history) < 3:
+            self.state = "unknown"
+            self.stable_count = 0
+            direction = "holding"
+        elif significant:
+            self.state = "moderately changing"
+            self.stable_count = 0
+            next_interval = max(
+                SMART_MIN_INTERVAL,
+                self.current_interval * self.config.decrease_factor,
+            )
+            direction = "decreasing" if next_interval < self.current_interval else "holding"
+            self.current_interval = next_interval
+        elif stable:
+            self.stable_count += 1
+            self.state = (
+                "highly stable"
+                if self.stable_count >= self.config.highly_stable_samples
+                else "relatively stable"
+            )
+            if self.stable_count >= self.config.stable_samples:
+                target = SMART_MAX_INTERVAL
+                if self.stable_count < self.config.highly_stable_samples:
+                    # Grow cautiously until stability is well proven.
+                    target = min(target, SMART_MAX_INTERVAL * 0.65)
+                next_interval = min(target, self.current_interval * self.config.increase_factor)
+                direction = "increasing" if next_interval > self.current_interval else "holding"
+                self.current_interval = next_interval
+            else:
+                direction = "holding"
+        else:
+            self.state = "moderately changing"
+            self.stable_count = 0
+            direction = "holding"
+
+        self.current_interval = _clamp(
+            self.current_interval,
+            SMART_MIN_INTERVAL,
+            SMART_MAX_INTERVAL,
+        )
+        self.previous_timestamp = now
         return self._decision(
             trend=trend,
             score=stability_score,
@@ -682,106 +792,376 @@ def _valid_capture_frame(frame) -> bool:
     except (TypeError, ValueError):
         return False
 
-def sample_camera(
-    index: int,
-    calibration: ExposureCalibration | None = None,
-    detailed: bool = False,
-    read_timeout: float | None = 12.0,
-) -> float | AmbientMeasurement | None:
-    camera = None
-    try:
-        camera = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not camera.isOpened():
-            logging.warning("Camera %s could not be opened", index)
+@dataclass(frozen=True)
+class BrightnessGateConfig:
+    """Anti-flicker rules for applying Smart Adaptive brightness changes."""
+
+    stabilization_samples: int = 3
+    min_change: int = 4
+    confirmation_samples: int = 2
+    large_change: int = 12
+    max_step: int = 20
+    min_seconds_between_changes: float = 20.0
+
+    def __post_init__(self):
+        if self.stabilization_samples < 0:
+            raise ValueError("stabilization_samples must be non-negative")
+        if self.min_change < 1:
+            raise ValueError("min_change must be at least 1")
+        if self.confirmation_samples < 1:
+            raise ValueError("confirmation_samples must be at least 1")
+        if self.large_change < self.min_change:
+            raise ValueError("large_change must be at least min_change")
+        if self.max_step < self.min_change:
+            raise ValueError("max_step must be at least min_change")
+        if self.min_seconds_between_changes < 0.0:
+            raise ValueError("min_seconds_between_changes must be non-negative")
+
+
+class BrightnessChangeGate:
+    """Decide whether a proposed brightness may actually be applied.
+
+    Smart Adaptive used to apply the first measurement immediately and
+    then react to every later proposal, so sensor noise near a curve
+    boundary made the screen visibly hunt up and down. The gate adds
+    the missing discipline:
+
+    * a startup stabilization period: the first
+      ``stabilization_samples`` proposals are observed, never applied;
+    * a deadband: proposals closer than ``min_change`` points to the
+      currently applied brightness are ignored;
+    * confirmation: moderate changes must be proposed consistently by
+      ``confirmation_samples`` consecutive measurements before they are
+      applied, so a single noisy sample changes nothing;
+    * rate limiting: after a change, further moderate changes wait at
+      least ``min_seconds_between_changes``;
+    * magnitude limiting: one application moves at most ``max_step``
+      points (the existing ramp then smooths the transition itself).
+
+    Large changes (at least ``large_change`` points, e.g. walking into
+    a bright room) bypass confirmation and rate limiting so the
+    display stays responsive when it matters.
+    """
+
+    def __init__(
+        self,
+        config: BrightnessGateConfig = BrightnessGateConfig(),
+        clock=time.monotonic,
+    ):
+        self.config = config
+        self.clock = clock
+        self.reset()
+
+    def reset(self):
+        self.observations = 0
+        self._pending_target: int | None = None
+        self._pending_count = 0
+        self._last_change_at: float | None = None
+
+    def observe(
+        self,
+        proposed: int | None,
+        applied: int | None,
+        now: float | None = None,
+    ) -> int | None:
+        """Return the brightness to apply now, or None to hold."""
+        if proposed is None:
             return None
-        if read_timeout is not None and read_timeout > 0.0:
+        proposed = int(proposed)
+        if now is None:
+            now = self.clock()
+        self.observations += 1
+        if self.observations <= self.config.stabilization_samples:
+            return None
+        if applied is None:
+            self._last_change_at = now
+            self._pending_target = None
+            self._pending_count = 0
+            return proposed
+
+        delta = proposed - applied
+        if abs(delta) < self.config.min_change:
+            self._pending_target = None
+            self._pending_count = 0
+            return None
+
+        step = max(-self.config.max_step, min(self.config.max_step, delta))
+        target = applied + step
+
+        if abs(delta) >= self.config.large_change:
+            self._pending_target = None
+            self._pending_count = 0
+            self._last_change_at = now
+            return target
+
+        if (
+            self._last_change_at is not None
+            and now - self._last_change_at
+            < self.config.min_seconds_between_changes
+        ):
+            return None
+
+        if (
+            self._pending_target is not None
+            and abs(proposed - self._pending_target) <= 2
+        ):
+            self._pending_count += 1
+        else:
+            self._pending_target = proposed
+            self._pending_count = 1
+        if self._pending_count < self.config.confirmation_samples:
+            return None
+
+        self._pending_target = None
+        self._pending_count = 0
+        self._last_change_at = now
+        return target
+
+
+class CameraSession:
+    """A reusable webcam session that opens the camera exactly once.
+
+    Smart Adaptive used to open and release the camera for every
+    measurement. At short intervals that made the camera LED blink and
+    the device audibly restart every few seconds, and every reopen paid
+    a full auto-exposure warm-up. A session instead opens the device
+    once, warms it up once, and serves many samples from the same
+    capture object; it is released exactly once by :meth:`close`.
+
+    Failure handling is deliberately conservative: if frames stop
+    arriving, the session invalidates itself and refuses to reopen
+    until a cooldown has passed, so a disconnected or busy camera
+    cannot cause a reopen storm or GUI instability. A dark scene
+    (frames arrive but measure near-black) is *not* a device failure
+    and keeps the session open.
+    """
+
+    WARMUP_FRAMES = 8
+    REOPEN_COOLDOWN = 10.0
+
+    def __init__(
+        self,
+        index: int,
+        calibration: ExposureCalibration | None = None,
+        *,
+        clock=time.monotonic,
+        read_timeout: float | None = 12.0,
+        reopen_cooldown: float = REOPEN_COOLDOWN,
+    ):
+        self.index = index
+        self.calibration = calibration
+        self.clock = clock
+        self.read_timeout = read_timeout
+        self.reopen_cooldown = reopen_cooldown
+        self.open_count = 0
+        self.consecutive_failures = 0
+        self._camera = None
+        self._properties: CameraProperties | None = None
+        self._lock = threading.Lock()
+        self._next_open_at = 0.0
+
+    @property
+    def is_open(self) -> bool:
+        return self._camera is not None
+
+    def __enter__(self) -> "CameraSession":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+    def _ensure_open_locked(self) -> bool:
+        if self._camera is not None:
+            return True
+        if self.clock() < self._next_open_at:
+            return False
+        camera = None
+        try:
+            camera = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
+            if not camera.isOpened():
+                logging.warning("Camera %s could not be opened", self.index)
+                try:
+                    camera.release()
+                except Exception:
+                    pass
+                self.consecutive_failures += 1
+                self._next_open_at = self.clock() + self.reopen_cooldown
+                return False
+        except Exception:
+            logging.exception("Camera %s failed to open", self.index)
+            self.consecutive_failures += 1
+            self._next_open_at = self.clock() + self.reopen_cooldown
+            return False
+
+        self._camera = camera
+        self.open_count += 1
+        if self.read_timeout is not None and self.read_timeout > 0.0:
             try:
                 timeout_property = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
                 if timeout_property is not None:
-                    camera.set(timeout_property, float(read_timeout) * 1000.0)
+                    camera.set(timeout_property, float(self.read_timeout) * 1000.0)
             except (AttributeError, TypeError, ValueError):
-                logging.debug("Camera %s does not expose a read timeout", index)
+                logging.debug("Camera %s does not expose a read timeout", self.index)
 
-        # Warm up the camera so auto-exposure settles.
-        for _ in range(8):
+        # Warm up once per (re)open so auto-exposure can settle.
+        for _ in range(self.WARMUP_FRAMES):
             try:
                 camera.read()
             except Exception:
-                logging.warning("Camera %s failed during warm-up", index, exc_info=True)
+                logging.warning(
+                    "Camera %s failed during warm-up", self.index, exc_info=True
+                )
             time.sleep(0.08)
 
-        properties = _camera_properties(camera)
+        self._properties = _camera_properties(camera)
+        properties = self._properties
         logging.info(
             "Camera %s properties: auto_exposure=%s exposure=%s gain=%s "
             "auto_white_balance=%s white_balance=%s",
-            index,
+            self.index,
             properties.auto_exposure,
             properties.exposure,
             properties.gain,
             properties.auto_white_balance,
             properties.white_balance,
         )
+        return True
 
-        samples: list[AmbientMeasurement] = []
-        for _ in range(MEASUREMENT_SAMPLE_COUNT):
-            try:
-                ok, frame = camera.read()
-                if ok and _valid_capture_frame(frame):
-                    measurement = ambient_measurement(frame)
-                    if calibration is not None:
-                        measurement = AmbientMeasurement(
-                            value=calibration.adjust(measurement.value, properties),
-                            p50=measurement.p50,
-                            p75=measurement.p75,
-                            p90=measurement.p90,
-                            scene_spread=measurement.scene_spread,
-                            highlight_ratio=measurement.highlight_ratio,
-                            lower_quartile=measurement.lower_quartile,
-                        )
-                    if measurement.value > 1.0:
-                        samples.append(measurement)
-                else:
-                    logging.warning("Camera %s returned an invalid frame", index)
-            except Exception:
-                logging.warning("Camera %s failed during sampling", index, exc_info=True)
-            time.sleep(0.08)
-
-        if len(samples) < 2:
-            logging.warning("Camera %s did not provide enough valid frames", index)
-            return None
-        samples.sort(key=lambda item: item.value)
-        measurement = samples[len(samples) // 2]
-        logging.info(
-            "Camera %s measurement: value=%.1f p25=%s p50=%.1f p75=%.1f "
-            "p90=%.1f spread=%.1f highlights=%.3f exposure=%s",
-            index,
-            measurement.value,
-            measurement.lower_quartile,
-            measurement.p50,
-            measurement.p75,
-            measurement.p90,
-            measurement.scene_spread,
-            measurement.highlight_ratio,
-            properties.exposure,
-        )
-        return measurement if detailed else measurement.value
-    except Exception:
-        logging.exception("Camera %s sampling failed", index)
-        return None
-    finally:
+    def _invalidate_locked(self) -> None:
+        camera, self._camera = self._camera, None
+        self._properties = None
         if camera is not None:
             try:
                 camera.release()
             except Exception:
-                logging.warning("Camera %s failed to release", index, exc_info=True)
+                logging.warning(
+                    "Camera %s failed to release", self.index, exc_info=True
+                )
+        self.consecutive_failures += 1
+        self._next_open_at = self.clock() + self.reopen_cooldown
+
+    def sample_detailed(self) -> AmbientMeasurement | None:
+        """Take one median-of-samples measurement from the open camera."""
+        with self._lock:
+            if not self._ensure_open_locked():
+                return None
+            camera = self._camera
+            properties = self._properties
+            samples: list[AmbientMeasurement] = []
+            successful_reads = 0
+            for _ in range(MEASUREMENT_SAMPLE_COUNT):
+                try:
+                    ok, frame = camera.read()
+                    if ok and _valid_capture_frame(frame):
+                        successful_reads += 1
+                        measurement = ambient_measurement(frame)
+                        if self.calibration is not None and properties is not None:
+                            measurement = AmbientMeasurement(
+                                value=self.calibration.adjust(
+                                    measurement.value, properties
+                                ),
+                                p50=measurement.p50,
+                                p75=measurement.p75,
+                                p90=measurement.p90,
+                                scene_spread=measurement.scene_spread,
+                                highlight_ratio=measurement.highlight_ratio,
+                                lower_quartile=measurement.lower_quartile,
+                            )
+                        if measurement.value > 1.0:
+                            samples.append(measurement)
+                    else:
+                        logging.warning(
+                            "Camera %s returned an invalid frame", self.index
+                        )
+                except Exception:
+                    logging.warning(
+                        "Camera %s failed during sampling",
+                        self.index,
+                        exc_info=True,
+                    )
+                time.sleep(0.08)
+
+            if successful_reads == 0:
+                # The device stopped delivering frames: drop it and let
+                # the cooldown govern any reopen attempt.
+                logging.warning(
+                    "Camera %s delivered no frames; session invalidated",
+                    self.index,
+                )
+                self._invalidate_locked()
+                return None
+            if len(samples) < 2:
+                logging.warning(
+                    "Camera %s did not provide enough valid frames", self.index
+                )
+                return None
+            self.consecutive_failures = 0
+            samples.sort(key=lambda item: item.value)
+            measurement = samples[len(samples) // 2]
+            logging.info(
+                "Camera %s measurement: value=%.1f p25=%s p50=%.1f p75=%.1f "
+                "p90=%.1f spread=%.1f highlights=%.3f exposure=%s",
+                self.index,
+                measurement.value,
+                measurement.lower_quartile,
+                measurement.p50,
+                measurement.p75,
+                measurement.p90,
+                measurement.scene_spread,
+                measurement.highlight_ratio,
+                properties.exposure if properties is not None else None,
+            )
+            return measurement
+
+    def sample(self) -> float | None:
+        measurement = self.sample_detailed()
+        return measurement.value if measurement is not None else None
+
+    def close(self) -> None:
+        """Release the camera exactly once; safe to call repeatedly."""
+        with self._lock:
+            camera, self._camera = self._camera, None
+            self._properties = None
+            if camera is not None:
+                try:
+                    camera.release()
+                except Exception:
+                    logging.warning(
+                        "Camera %s failed to release", self.index, exc_info=True
+                    )
+
+
+def sample_camera(
+    index: int,
+    calibration: ExposureCalibration | None = None,
+    detailed: bool = False,
+    read_timeout: float | None = 12.0,
+) -> float | AmbientMeasurement | None:
+    """One-shot sample for the camera test button and one-off CLI runs.
+
+    Continuous Smart Adaptive runs use :class:`CameraSession` directly
+    so the camera is not reopened for every measurement.
+    """
+    session = CameraSession(index, calibration, read_timeout=read_timeout)
+    try:
+        measurement = session.sample_detailed()
+    finally:
+        session.close()
+    if measurement is None:
+        return None
+    return measurement if detailed else measurement.value
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adaptive brightness controller")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--mode", choices=("fixed", "smart"), default="smart")
     parser.add_argument("--interval", type=float, default=DEFAULT_FIXED_INTERVAL)
-    parser.add_argument("--minimum-interval", type=float, default=2.0)
-    parser.add_argument("--maximum-interval", type=float, default=60.0)
+    # Deprecated: Smart Adaptive no longer takes user-configured interval
+    # bounds. The flags are still accepted so old scripts and shortcuts
+    # keep working, but their values are ignored.
+    parser.add_argument("--minimum-interval", type=float, default=None)
+    parser.add_argument("--maximum-interval", type=float, default=None)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
@@ -791,55 +1171,76 @@ def main() -> None:
         not math.isfinite(args.interval) or args.interval < 30.0
     ):
         parser.error("--interval must be a finite number of at least 30 seconds.")
-    if (
-        not math.isfinite(args.minimum_interval)
-        or not math.isfinite(args.maximum_interval)
-        or args.minimum_interval < 0.5
-        or args.minimum_interval > args.maximum_interval
-    ):
-        parser.error("adaptive interval bounds must be finite and ordered.")
+    if args.minimum_interval is not None or args.maximum_interval is not None:
+        logging.warning(
+            "--minimum-interval/--maximum-interval are deprecated and ignored; "
+            "Smart Adaptive schedules measurements autonomously."
+        )
 
     controller = BrightnessController()
     calibration = ExposureCalibration()
-    adaptive = AdaptiveSamplingController(
-        AdaptiveSamplingConfig(
-            minimum_interval=args.minimum_interval,
-            maximum_interval=args.maximum_interval,
-            initial_interval=max(
-                args.minimum_interval,
-                min(5.0, args.maximum_interval),
-            ),
-        )
+    adaptive = (
+        AdaptiveSamplingController() if args.mode == "smart" else None
+    )
+    gate = BrightnessChangeGate() if args.mode == "smart" else None
+    session = (
+        CameraSession(args.camera, calibration)
+        if args.mode == "smart" and not args.once
+        else None
     )
     last_target = None
-    while True:
-        value = sample_camera(args.camera, calibration, detailed=True)
-        if value is None:
-            logging.warning("Camera sample unavailable")
-            wait_interval = adaptive.current_interval if args.mode == "smart" else args.interval
-        else:
-            decision = adaptive.update(value) if args.mode == "smart" else None
-            target = controller.update(value)
-            if target is None:
-                wait_interval = decision.interval if decision else args.interval
-                logging.warning("Ambient value did not produce a brightness target")
+    try:
+        while True:
+            if session is not None:
+                value = session.sample_detailed()
             else:
-                logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
-                if last_target is None or abs(target - last_target) >= 3:
-                    try:
-                        if last_target is None:
-                            set_brightness(target)
-                        else:
-                            ramp_brightness(last_target, target)
-                        last_target = target
-                    except Exception:
-                        logging.exception("Brightness update failed")
-                wait_interval = (
-                    decision.interval if decision else args.interval
+                value = sample_camera(args.camera, calibration, detailed=True)
+            if value is None:
+                logging.warning("Camera sample unavailable")
+                wait_interval = adaptive.current_interval if adaptive else args.interval
+            else:
+                target = controller.update(value)
+                brightness_error = (
+                    target - last_target
+                    if target is not None and last_target is not None
+                    else None
                 )
-        if args.once:
-            return
-        time.sleep(wait_interval)
+                decision = (
+                    adaptive.update(value, brightness_error=brightness_error)
+                    if adaptive
+                    else None
+                )
+                if target is None:
+                    wait_interval = decision.interval if decision else args.interval
+                    logging.warning("Ambient value did not produce a brightness target")
+                else:
+                    logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
+                    # In smart mode the gate enforces the stabilization
+                    # period, deadband, confirmation and rate limits;
+                    # --once and fixed mode keep the direct behaviour.
+                    apply_target = target
+                    if gate is not None and not args.once:
+                        apply_target = gate.observe(target, last_target)
+                    if apply_target is not None and (
+                        last_target is None or apply_target != last_target
+                    ):
+                        try:
+                            if last_target is None:
+                                set_brightness(apply_target)
+                            else:
+                                ramp_brightness(last_target, apply_target)
+                            last_target = apply_target
+                        except Exception:
+                            logging.exception("Brightness update failed")
+                    wait_interval = (
+                        decision.interval if decision else args.interval
+                    )
+            if args.once:
+                return
+            time.sleep(wait_interval)
+    finally:
+        if session is not None:
+            session.close()
 
 if __name__ == "__main__":
     main()

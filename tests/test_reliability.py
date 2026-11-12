@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import sys
 import threading
 import unittest
@@ -52,7 +52,7 @@ class BrightnessEngineTests(unittest.TestCase):
             engine.CameraProperties(exposure=-8.8, gain=28.0),
         )
 
-        self.assertEqual(engine.value_to_brightness(dark_room), 34)
+        self.assertEqual(engine.value_to_brightness(dark_room), 49)
         self.assertGreater(bright_room, dark_room)
         self.assertGreaterEqual(engine.value_to_brightness(bright_room), 60)
         self.assertLessEqual(engine.value_to_brightness(bright_room), 70)
@@ -78,7 +78,7 @@ class BrightnessEngineTests(unittest.TestCase):
         sunny_target = engine.BrightnessController().update(sunny_room)
         bright_target = engine.BrightnessController().update(bright_room)
 
-        self.assertEqual(dark_target, 34)
+        self.assertEqual(dark_target, 49)
         self.assertGreaterEqual(sunny_target, 60)
         self.assertLessEqual(sunny_target, 70)
         self.assertGreaterEqual(bright_target, 54)
@@ -112,7 +112,7 @@ class BrightnessEngineTests(unittest.TestCase):
                     139.6, 139.6, 145.0, 157.0, 17.4, 0.01
                 )
             ),
-            34,
+            49,
         )
 
     def test_controller_target_is_the_brightness_request_sent_to_windows(self):
@@ -124,10 +124,10 @@ class BrightnessEngineTests(unittest.TestCase):
         controller_target = engine.BrightnessController().update(measurement)
         with mock.patch.object(engine.subprocess, "run") as run:
             engine.set_brightness(controller_target)
-        self.assertEqual(controller_target, 65)
+        self.assertEqual(controller_target, 59)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][-1], "65")
-        self.assertEqual(commands[1][-1], "65")
+        self.assertEqual(commands[0][-1], "59")
+        self.assertEqual(commands[1][-1], "59")
 
     def test_dim_sunset_scene_limits_boost_and_interpolates_downward(self):
         sunset = [
@@ -137,14 +137,11 @@ class BrightnessEngineTests(unittest.TestCase):
         ]
         controller = engine.BrightnessController()
         targets = [controller.update(item) for item in sunset]
-        self.assertLessEqual(targets[0], 56)
-        self.assertLessEqual(targets[1], 52)
-        self.assertLessEqual(targets[2], 51)
+        self.assertLessEqual(targets[0], 60)
+        self.assertLessEqual(targets[1], 59)
+        self.assertLessEqual(targets[2], 56)
         self.assertGreaterEqual(targets[0], targets[1])
         self.assertGreaterEqual(targets[1], targets[2])
-        self.assertLessEqual(targets[0], 56)
-        self.assertLessEqual(targets[1], 52)
-        self.assertLessEqual(targets[2], 51)
 
     def test_illuminated_sunset_scene_is_distinct_from_dim_sunset_scene(self):
         dim = [
@@ -160,8 +157,9 @@ class BrightnessEngineTests(unittest.TestCase):
         illuminated_controller = engine.BrightnessController()
         illuminated_target = illuminated_controller.update(illuminated)
         self.assertFalse(illuminated_controller.last_dim_scene)
-        self.assertLessEqual(dim_target, 50)
-        self.assertGreaterEqual(illuminated_target, 52)
+        self.assertLessEqual(dim_target, 56)
+        self.assertGreaterEqual(illuminated_target, 57)
+        self.assertGreater(illuminated_target, dim_target)
 
     def test_lights_on_transition_resets_dim_scene_history(self):
         controller = engine.BrightnessController()
@@ -221,8 +219,9 @@ class BrightnessEngineTests(unittest.TestCase):
         self.assertLess(engine.value_to_brightness(stable_low), engine.value_to_brightness(stable_high))
 
     def test_brightness_curve_targets_comfortable_indoor_level(self):
-        self.assertEqual(engine.value_to_brightness(139.6), 34)
-        self.assertLess(engine.value_to_brightness(139.6), 44)
+        self.assertEqual(engine.value_to_brightness(139.6), 49)
+        # User reference point: ~170.9 ambient should map to ~57%, not 67%.
+        self.assertEqual(engine.value_to_brightness(170.9), 57)
 
     def test_brightness_curve_is_monotonic_and_bounded(self):
         values = [engine.value_to_brightness(value) for value in (0, 20, 60, 120, 180, 240, 255)]
@@ -242,8 +241,8 @@ class BrightnessEngineTests(unittest.TestCase):
         controller.update(40.0)
         normal = controller.update(80.0)
         self.assertEqual(controller.filtered_ambient, 54.0)
-        self.assertEqual(engine.value_to_brightness(54.0), 14)
-        self.assertEqual(normal, 12)
+        self.assertEqual(engine.value_to_brightness(54.0), 25)
+        self.assertEqual(normal, 25)
         self.assertLessEqual(
             abs(engine.value_to_brightness(54.0) - normal),
             engine.DEFAULT_BRIGHTNESS_CONFIG.brightness_hysteresis,
@@ -431,7 +430,7 @@ class BrightnessEngineTests(unittest.TestCase):
         ):
             engine.main()
 
-        adaptive.update.assert_called_once_with(100.0)
+        adaptive.update.assert_called_once_with(100.0, brightness_error=None)
 
     def test_cli_explicit_fixed_mode_does_not_use_adaptive_controller(self):
         adaptive = mock.Mock(update=mock.Mock())
@@ -476,9 +475,21 @@ class ConfigurationDefaultTests(unittest.TestCase):
     def test_interval_defaults_remain_mode_specific(self):
         self.assertEqual(engine.DEFAULT_FIXED_INTERVAL, 120.0)
         config = engine.AdaptiveSamplingConfig()
-        self.assertEqual(config.minimum_interval, 2.0)
-        self.assertEqual(config.maximum_interval, 60.0)
-        self.assertEqual(config.initial_interval, 5.0)
+        # Smart bounds are internal constants now, not user settings.
+        self.assertEqual(config.minimum_interval, engine.SMART_MIN_INTERVAL)
+        self.assertEqual(config.maximum_interval, engine.SMART_MAX_INTERVAL)
+        self.assertEqual(config.initial_interval, engine.SMART_INITIAL_INTERVAL)
+        self.assertEqual(engine.SMART_MIN_INTERVAL, 5.0)
+        self.assertEqual(engine.SMART_MAX_INTERVAL, 120.0)
+        self.assertEqual(engine.SMART_INITIAL_INTERVAL, 8.0)
+
+    def test_persisted_settings_default_to_smart_adaptive(self):
+        import app_config
+
+        settings = app_config.AppSettings()
+        self.assertEqual(settings.sampling_mode, app_config.SMART_ADAPTIVE_MODE)
+        self.assertEqual(settings.fixed_interval, 120.0)
+        self.assertEqual(settings.camera_index, 0)
 
 
 class SamplingModeUiTests(unittest.TestCase):
@@ -543,6 +554,10 @@ class SamplingModeUiTests(unittest.TestCase):
             app.sampling_mode_description(app.FIXED_INTERVAL_MODE),
         )
         self.assertIn(
+            "automatically",
+            app.sampling_mode_description(app.SMART_ADAPTIVE_MODE),
+        )
+        self.assertNotIn(
             "configured limits",
             app.sampling_mode_description(app.SMART_ADAPTIVE_MODE),
         )
@@ -558,8 +573,13 @@ class AdaptiveSamplingTests(unittest.TestCase):
         fraction = position - lower
         return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
-    def test_smart_default_maximum_interval_is_sixty_seconds(self):
-        self.assertEqual(engine.AdaptiveSamplingConfig().maximum_interval, 60.0)
+    def test_smart_internal_maximum_interval_is_one_hundred_twenty_seconds(self):
+        self.assertEqual(
+            engine.AdaptiveSamplingConfig().maximum_interval,
+            engine.SMART_MAX_INTERVAL,
+        )
+        self.assertEqual(engine.SMART_MAX_INTERVAL, 120.0)
+        self.assertEqual(engine.SMART_MIN_INTERVAL, 5.0)
 
     def test_stable_environment_progressively_reaches_maximum(self):
         controller = engine.AdaptiveSamplingController()
@@ -568,21 +588,23 @@ class AdaptiveSamplingTests(unittest.TestCase):
             for index in range(20)
         ]
 
-        self.assertEqual(intervals[0], 5.0)
+        self.assertEqual(intervals[0], engine.SMART_INITIAL_INTERVAL)
         self.assertEqual(intervals, sorted(intervals))
-        self.assertEqual(intervals[-1], 60.0)
+        self.assertEqual(intervals[-1], engine.SMART_MAX_INTERVAL)
         self.assertEqual(controller.state, "highly stable")
 
-    def test_optional_one_hundred_twenty_second_cap_remains_supported(self):
-        controller = engine.AdaptiveSamplingController(
-            engine.AdaptiveSamplingConfig(maximum_interval=120.0)
-        )
+    def test_interval_never_exceeds_internal_maximum(self):
+        controller = engine.AdaptiveSamplingController()
         timestamp = 0.0
-        while controller.current_interval < 120.0:
+        while controller.current_interval < engine.SMART_MAX_INTERVAL:
             decision = controller.update(100.0, timestamp=timestamp)
             timestamp += decision.interval
 
-        self.assertEqual(decision.interval, 120.0)
+        self.assertEqual(decision.interval, engine.SMART_MAX_INTERVAL)
+        for _ in range(5):
+            decision = controller.update(100.0, timestamp=timestamp)
+            timestamp += decision.interval
+            self.assertLessEqual(decision.interval, engine.SMART_MAX_INTERVAL)
 
     def test_sudden_change_quickly_enters_responsive_state(self):
         controller = engine.AdaptiveSamplingController()
@@ -593,7 +615,7 @@ class AdaptiveSamplingTests(unittest.TestCase):
         decision = controller.update(220.0, timestamp=10.0)
 
         self.assertLess(decision.interval, before)
-        self.assertEqual(decision.interval, 2.0)
+        self.assertEqual(decision.interval, engine.SMART_MIN_INTERVAL)
         self.assertEqual(decision.state, "rapidly changing")
         self.assertGreater(decision.trend, 0.0)
 
@@ -603,7 +625,7 @@ class AdaptiveSamplingTests(unittest.TestCase):
             decision = controller.update(value, timestamp=float(index))
 
         self.assertEqual(decision.state, "relatively stable")
-        self.assertGreaterEqual(decision.interval, 5.0)
+        self.assertGreaterEqual(decision.interval, engine.SMART_INITIAL_INTERVAL)
         self.assertEqual(len(controller.history), 5)
 
     def test_invalid_measurements_do_not_enter_history(self):
@@ -619,20 +641,15 @@ class AdaptiveSamplingTests(unittest.TestCase):
         self.assertEqual(decision.filtered_value, 100.0)
 
     def test_interval_limits_are_respected_during_change_and_recovery(self):
-        config = engine.AdaptiveSamplingConfig(
-            initial_interval=5.0,
-            minimum_interval=3.0,
-            maximum_interval=20.0,
-        )
-        controller = engine.AdaptiveSamplingController(config)
+        controller = engine.AdaptiveSamplingController()
         values = [20.0, 220.0, 20.0, 220.0] * 8
         intervals = [
             controller.update(value, timestamp=float(index)).interval
             for index, value in enumerate(values)
         ]
 
-        self.assertGreaterEqual(min(intervals), 3.0)
-        self.assertLessEqual(max(intervals), 20.0)
+        self.assertGreaterEqual(min(intervals), engine.SMART_MIN_INTERVAL)
+        self.assertLessEqual(max(intervals), engine.SMART_MAX_INTERVAL)
 
     def test_gradual_transition_is_not_treated_as_camera_failure(self):
         controller = engine.AdaptiveSamplingController()
@@ -660,9 +677,9 @@ class AdaptiveSamplingTests(unittest.TestCase):
         recovered = controller.update(220.0, timestamp=22.0)
         changed_back = controller.update(20.0, timestamp=24.0)
 
-        self.assertEqual(changed.interval, 2.0)
-        self.assertEqual(recovered.interval, 2.0)
-        self.assertEqual(changed_back.interval, 2.0)
+        self.assertEqual(changed.interval, engine.SMART_MIN_INTERVAL)
+        self.assertEqual(recovered.interval, engine.SMART_MIN_INTERVAL)
+        self.assertEqual(changed_back.interval, engine.SMART_MIN_INTERVAL)
         self.assertEqual(changed_back.state, "rapidly changing")
 
     def test_stability_score_reflects_noise_after_noise_adaptation(self):
@@ -686,11 +703,11 @@ class AdaptiveSamplingTests(unittest.TestCase):
         detection_timestamp = timestamp + controller.current_interval
         decision = controller.update(220.0, timestamp=detection_timestamp)
 
-        self.assertEqual(controller.current_interval, 2.0)
+        self.assertEqual(controller.current_interval, engine.SMART_MIN_INTERVAL)
         self.assertEqual(decision.state, "rapidly changing")
         self.assertAlmostEqual(
             detection_timestamp - event_timestamp,
-            controller.config.maximum_interval - 0.001,
+            engine.SMART_MAX_INTERVAL - 0.001,
             places=3,
         )
 
@@ -709,7 +726,7 @@ class AdaptiveSamplingTests(unittest.TestCase):
             decision = controller.update(220.0, timestamp=timestamp)
             confirmation_intervals.append(decision.interval)
 
-        self.assertEqual(confirmation_intervals, [2.0] * 5)
+        self.assertEqual(confirmation_intervals, [engine.SMART_MIN_INTERVAL] * 5)
 
     def test_percentile_latency_calculation_is_deterministic(self):
         latencies = [0.0, 15.0, 30.0, 45.0, 60.0]
@@ -892,11 +909,17 @@ class WorkerLifecycleTests(unittest.TestCase):
         owner.stop_event = threading.Event()
         owner.power_aware_interval = mock.Mock(return_value=999.0)
 
-        def sample(_camera, **_kwargs):
+        session = mock.Mock()
+
+        def sample_detailed():
             owner.stop_event.set()
             return 100.0
 
-        with mock.patch.object(app.engine, "sample_camera", side_effect=sample), \
+        session.sample_detailed.side_effect = sample_detailed
+
+        with mock.patch.object(
+                 app.engine, "CameraSession", return_value=session
+             ), \
              mock.patch.object(
                  app.engine,
                  "BrightnessController",
