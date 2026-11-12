@@ -77,7 +77,7 @@ For each check, the app:
 6. Maps the result through a configurable comfort curve.
 7. Applies smoothing and hysteresis to avoid flicker.
 8. Sends the target to Windows with `powercfg`; larger changes are ramped gradually.
-9. In Fixed Interval mode, releases the webcam immediately after sampling. In Smart Adaptive mode, keeps one camera session open for the whole run so the webcam is not restarted for every check, and releases it when automation stops.
+9. Releases the webcam immediately after sampling, in both modes. Each check is one controlled cycle — open, warm-up frames discarded while auto-exposure settles, five captured frames, median, release — so the camera LED is off while the app waits for the next scheduled check, which in a stable Smart Adaptive room can be two minutes later.
 
 In **Smart Adaptive** mode, `AdaptiveSamplingController` schedules every
 measurement autonomously — there are no user-configured interval limits. It
@@ -97,8 +97,15 @@ Brightness changes in Smart Adaptive mode also pass through
 stabilization period (nothing is applied), insignificant changes inside the
 deadband are ignored, moderate changes need confirmation from consecutive
 samples, successive changes are rate- and magnitude-limited, and only large
-changes apply immediately. Together with the camera session this makes Smart
-Adaptive calm: no camera restart flicker and no brightness hunting.
+changes apply immediately.
+
+Independently of mode, the whole brightness pipeline is bounded by a comfort
+ceiling: scene boost, dim-scene boost, and exposure compensation together may
+never push the effective brightness more than a small allowance above the
+calibrated curve for the measured ambient, and that allowance tapers to zero
+as the measured ambient approaches the top of the range. An already-bright
+room therefore cannot be boosted far past its calibrated target (a measured
+173 maps to 58% plain and at most ~61% with scene compensation).
 Fixed Interval mode bypasses the scheduler and gate and retains the existing
 scheduling behavior.
 
@@ -153,8 +160,9 @@ lighting, and whether the display accepts Windows brightness commands.
    turns off after the short sample.
 2. Select **Smart Adaptive**, start automation, and leave the room stable
    for at least 10 minutes. Confirm that the diagnostic interval grows toward
-   120 seconds, the camera LED stays on (one session, no repeated restarts),
-   and brightness does not change during the first stabilization samples.
+   120 seconds, the camera LED turns on only for each brief check and off
+   in between, and brightness does not change during the first stabilization
+   samples.
 3. Move from a dark room into a bright room, then repeat from bright to dark.
    Confirm that the next reading changes the target and that the displayed
    interval falls to 2 seconds for confirmation samples before growing again.

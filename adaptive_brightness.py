@@ -52,6 +52,19 @@ class BrightnessConfig:
     sudden_change_threshold: float = 45.0
     brightness_hysteresis: int = 2
     scene_boost_max: float = 65.0
+    # Hard comfort ceiling for ALL ambient-domain boosts combined
+    # (scene boost, dim-scene boost, exposure-driven inflation). The
+    # pipeline may never produce an effective ambient whose brightness
+    # exceeds the calibrated curve value for the measured ambient by
+    # more than this allowance. The allowance is expressed in
+    # brightness points: full in dim/mid light (where scene
+    # compensation is legitimate), then smoothstepped to zero between
+    # the normalized start/end points, because an already-bright
+    # measurement needs no upward compensation. See
+    # BrightnessController.update and scene_boost_allowance().
+    boost_cap_points: float = 15.0
+    boost_cap_start: float = 0.55
+    boost_cap_end: float = 0.78
     scene_spread_start: float = 25.0
     scene_spread_end: float = 95.0
     bright_scene_start: float = 118.0
@@ -603,6 +616,55 @@ def value_to_brightness(
     return int(round(_clamp(brightness, config.brightness_min, config.brightness_max)))
 
 
+def brightness_to_value(
+    brightness: float,
+    config: BrightnessConfig = DEFAULT_BRIGHTNESS_CONFIG,
+) -> float:
+    """Invert :func:`value_to_brightness` (exact for the power curve)."""
+    if config.brightness_max <= config.brightness_min:
+        raise ValueError("brightness_max must be greater than brightness_min")
+    if config.ambient_max <= config.ambient_min:
+        raise ValueError("ambient_max must be greater than ambient_min")
+    if config.curve_exponent <= 0.0 or not math.isfinite(config.curve_exponent):
+        raise ValueError("curve_exponent must be a positive finite number")
+    fraction = _clamp(
+        (brightness - config.brightness_min)
+        / (config.brightness_max - config.brightness_min),
+        0.0,
+        1.0,
+    )
+    return config.ambient_min + (fraction ** (1.0 / config.curve_exponent)) * (
+        config.ambient_max - config.ambient_min
+    )
+
+
+def scene_boost_allowance(
+    value: float,
+    config: BrightnessConfig = DEFAULT_BRIGHTNESS_CONFIG,
+) -> float:
+    """Brightness points of total boost allowed at a measured ambient.
+
+    Full allowance at and below ``boost_cap_start`` of the ambient
+    range, smoothstepped to zero at ``boost_cap_end``. This is the
+    comfort ceiling that keeps scene/exposure compensation from
+    pushing an already-bright measurement far past its calibrated
+    target.
+    """
+    normalized = _clamp(
+        (value - config.ambient_min) / (config.ambient_max - config.ambient_min),
+        0.0,
+        1.0,
+    )
+    start, end = config.boost_cap_start, config.boost_cap_end
+    if normalized <= start:
+        return config.boost_cap_points
+    if normalized >= end or end <= start:
+        return 0.0
+    t = (normalized - start) / (end - start)
+    smooth = t * t * (3.0 - 2.0 * t)
+    return config.boost_cap_points * (1.0 - smooth)
+
+
 class BrightnessController:
     """Stateful filtering and hysteresis around the configurable brightness curve."""
 
@@ -752,6 +814,22 @@ class BrightnessController:
         scene_transition = self.last_dim_scene and not dim_scene
         self.last_dim_scene = dim_scene
         self.previous_raw_ambient = float(raw_value)
+        # Comfort ceiling, applied downstream of EVERY ambient-domain
+        # modifier (scene boost, dim-scene boost and trend penalty;
+        # exposure compensation is already inside the measured value).
+        # Whatever the scene logic computed, the effective ambient may
+        # not map to a brightness more than scene_boost_allowance()
+        # points above the calibrated curve for the measured value.
+        # Without this, a bright, high-contrast room at a measured 173
+        # received the full +54 scene boost (its "bright scene" gating
+        # preserves the boost precisely when the scene is already
+        # bright) and produced 71-72% instead of the calibrated ~58%.
+        base_brightness = value_to_brightness(measurement.value, self.config)
+        cap_value = brightness_to_value(
+            base_brightness + scene_boost_allowance(measurement.value, self.config),
+            self.config,
+        )
+        value = min(value, cap_value)
         self.last_effective_ambient = _clamp(value, 0.0, 255.0)
         value = self.last_effective_ambient
         if not _validate_ambient(value):
@@ -919,14 +997,16 @@ class BrightnessChangeGate:
 
 
 class CameraSession:
-    """A reusable webcam session that opens the camera exactly once.
+    """One controlled camera lifecycle: open, warm up, sample, release.
 
-    Smart Adaptive used to open and release the camera for every
-    measurement. At short intervals that made the camera LED blink and
-    the device audibly restart every few seconds, and every reopen paid
-    a full auto-exposure warm-up. A session instead opens the device
-    once, warms it up once, and serves many samples from the same
-    capture object; it is released exactly once by :meth:`close`.
+    The application creates one session per measurement cycle (via
+    :func:`sample_camera`) and closes it immediately after the cycle,
+    so the webcam LED is off while the scheduler waits for the next
+    check. Within a cycle the session opens the device exactly once,
+    discards ``WARMUP_FRAMES`` frames while auto-exposure settles (the
+    first measurement after opening is therefore never taken from an
+    unstabilized sensor), captures ``MEASUREMENT_SAMPLE_COUNT`` frames,
+    and is released exactly once by :meth:`close`.
 
     Failure handling is deliberately conservative: if frames stop
     arriving, the session invalidates itself and refuses to reopen
@@ -1183,64 +1263,55 @@ def main() -> None:
         AdaptiveSamplingController() if args.mode == "smart" else None
     )
     gate = BrightnessChangeGate() if args.mode == "smart" else None
-    session = (
-        CameraSession(args.camera, calibration)
-        if args.mode == "smart" and not args.once
-        else None
-    )
     last_target = None
-    try:
-        while True:
-            if session is not None:
-                value = session.sample_detailed()
+    while True:
+        # Intermittent capture: one open/warm-up/capture/release
+        # cycle per measurement, so the camera LED is off while
+        # waiting for the next scheduled check.
+        value = sample_camera(args.camera, calibration, detailed=True)
+        if value is None:
+            logging.warning("Camera sample unavailable")
+            wait_interval = adaptive.current_interval if adaptive else args.interval
+        else:
+            target = controller.update(value)
+            brightness_error = (
+                target - last_target
+                if target is not None and last_target is not None
+                else None
+            )
+            decision = (
+                adaptive.update(value, brightness_error=brightness_error)
+                if adaptive
+                else None
+            )
+            if target is None:
+                wait_interval = decision.interval if decision else args.interval
+                logging.warning("Ambient value did not produce a brightness target")
             else:
-                value = sample_camera(args.camera, calibration, detailed=True)
-            if value is None:
-                logging.warning("Camera sample unavailable")
-                wait_interval = adaptive.current_interval if adaptive else args.interval
-            else:
-                target = controller.update(value)
-                brightness_error = (
-                    target - last_target
-                    if target is not None and last_target is not None
-                    else None
+                logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
+                # In smart mode the gate enforces the stabilization
+                # period, deadband, confirmation and rate limits;
+                # --once and fixed mode keep the direct behaviour.
+                apply_target = target
+                if gate is not None and not args.once:
+                    apply_target = gate.observe(target, last_target)
+                if apply_target is not None and (
+                    last_target is None or apply_target != last_target
+                ):
+                    try:
+                        if last_target is None:
+                            set_brightness(apply_target)
+                        else:
+                            ramp_brightness(last_target, apply_target)
+                        last_target = apply_target
+                    except Exception:
+                        logging.exception("Brightness update failed")
+                wait_interval = (
+                    decision.interval if decision else args.interval
                 )
-                decision = (
-                    adaptive.update(value, brightness_error=brightness_error)
-                    if adaptive
-                    else None
-                )
-                if target is None:
-                    wait_interval = decision.interval if decision else args.interval
-                    logging.warning("Ambient value did not produce a brightness target")
-                else:
-                    logging.info("ambient=%.1f target=%s last=%s", value, target, last_target)
-                    # In smart mode the gate enforces the stabilization
-                    # period, deadband, confirmation and rate limits;
-                    # --once and fixed mode keep the direct behaviour.
-                    apply_target = target
-                    if gate is not None and not args.once:
-                        apply_target = gate.observe(target, last_target)
-                    if apply_target is not None and (
-                        last_target is None or apply_target != last_target
-                    ):
-                        try:
-                            if last_target is None:
-                                set_brightness(apply_target)
-                            else:
-                                ramp_brightness(last_target, apply_target)
-                            last_target = apply_target
-                        except Exception:
-                            logging.exception("Brightness update failed")
-                    wait_interval = (
-                        decision.interval if decision else args.interval
-                    )
-            if args.once:
-                return
-            time.sleep(wait_interval)
-    finally:
-        if session is not None:
-            session.close()
+        if args.once:
+            return
+        time.sleep(wait_interval)
 
 if __name__ == "__main__":
     main()

@@ -909,17 +909,11 @@ class WorkerLifecycleTests(unittest.TestCase):
         owner.stop_event = threading.Event()
         owner.power_aware_interval = mock.Mock(return_value=999.0)
 
-        session = mock.Mock()
-
-        def sample_detailed():
+        def sample(_camera, **_kwargs):
             owner.stop_event.set()
             return 100.0
 
-        session.sample_detailed.side_effect = sample_detailed
-
-        with mock.patch.object(
-                 app.engine, "CameraSession", return_value=session
-             ), \
+        with mock.patch.object(app.engine, "sample_camera", side_effect=sample), \
              mock.patch.object(
                  app.engine,
                  "BrightnessController",

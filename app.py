@@ -1012,7 +1012,7 @@ class BrightnessApp(ctk.CTk):
 
         self.ios_hint(
             container,
-            "0 is usually the built-in webcam. Smart Adaptive keeps the camera open while automation runs; Fixed mode wakes it only for each sample.",
+            "0 is usually the built-in webcam. The camera wakes only for each brief check and turns off in between.",
         )
         self.ios_divider(container)
 
@@ -1076,9 +1076,9 @@ class BrightnessApp(ctk.CTk):
             self.adaptive_settings,
             "Smart Adaptive decides when to measure on its own: frequent "
             "checks while your lighting is changing, sparse checks when "
-            "the room is stable. It keeps one camera session open "
-            "instead of restarting the webcam for every check, and the "
-            "current interval is shown under Live readings.",
+            "the room is stable. The webcam opens only for each brief "
+            "check and its light turns off in between. The current "
+            "interval is shown under Live readings.",
         )
         self._refresh_sampling_mode()
         self.ios_divider(container)
@@ -1133,7 +1133,7 @@ class BrightnessApp(ctk.CTk):
 
         ctk.CTkLabel(
             note,
-            text="No frames are saved or uploaded. Fixed mode samples briefly; Smart Adaptive keeps the camera open while running.",
+            text="No frames are saved or uploaded. The camera is active only during each brief check.",
             font=("Segoe UI", 10),
             text_color=TEXT_SECONDARY,
             wraplength=480,
@@ -1604,132 +1604,124 @@ class BrightnessApp(ctk.CTk):
             if smart
             else None
         )
-        # Smart Adaptive keeps one camera session for the whole run and
-        # passes every proposed brightness through the anti-flicker
-        # gate. Fixed mode keeps the original one-shot sampling path.
+        # Both modes use intermittent capture: each measurement cycle
+        # opens the camera once, warms up, captures, and releases it,
+        # so the webcam LED is off while waiting for the next scheduled
+        # check. Smart Adaptive additionally passes every proposed
+        # brightness through the anti-flicker gate; the adaptive
+        # scheduler (not a persistent session) is what keeps the long
+        # stable-room intervals calm.
         gate = engine.BrightnessChangeGate() if smart else None
-        session = (
-            engine.CameraSession(camera, calibration=calibration)
-            if smart
-            else None
-        )
         last_measured_target = None
         last_commanded_target = None
 
-        try:
-            while not worker_stop_event.is_set() and generation == self.worker_generation:
-                try:
-                    with self.camera_lock:
-                        if session is not None:
-                            value = session.sample_detailed()
-                        else:
-                            value = engine.sample_camera(
-                                camera,
-                                calibration=calibration,
-                                detailed=True,
-                            )
+        while not worker_stop_event.is_set() and generation == self.worker_generation:
+            try:
+                with self.camera_lock:
+                    value = engine.sample_camera(
+                        camera,
+                        calibration=calibration,
+                        detailed=True,
+                    )
 
-                    if value is None:
-                        self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
-                        wait_interval = adaptive.current_interval if adaptive else interval
-                    else:
-                        target = controller.update(value)
-                        brightness_error = (
-                            target - last_commanded_target
-                            if target is not None
-                            and last_commanded_target is not None
-                            else None
+                if value is None:
+                    self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
+                    wait_interval = adaptive.current_interval if adaptive else interval
+                else:
+                    target = controller.update(value)
+                    brightness_error = (
+                        target - last_commanded_target
+                        if target is not None
+                        and last_commanded_target is not None
+                        else None
+                    )
+                    decision = (
+                        adaptive.update(
+                            value, brightness_error=brightness_error
                         )
-                        decision = (
-                            adaptive.update(
-                                value, brightness_error=brightness_error
+                        if adaptive
+                        else None
+                    )
+                    if target is None:
+                        self.events.put(
+                            (
+                                "status",
+                                (
+                                    "Invalid camera reading",
+                                    "Waiting for next check",
+                                    "warning",
+                                ),
                             )
-                            if adaptive
-                            else None
                         )
-                        if target is None:
+                        wait_interval = decision.interval if decision else interval
+                        worker_stop_event.wait(
+                            wait_interval
+                            if adaptive
+                            else self.power_aware_interval(wait_interval)
+                        )
+                        continue
+                    last_measured_target = target
+
+                    apply_target = target
+                    if gate is not None:
+                        apply_target = gate.observe(
+                            target, last_commanded_target
+                        )
+
+                    if not worker_stop_event.is_set() and generation == self.worker_generation:
+                        if apply_target is not None:
+                            with self.brightness_lock:
+                                if not worker_stop_event.is_set() and generation == self.worker_generation:
+                                    if last_commanded_target is None:
+                                        engine.set_brightness(apply_target)
+                                        last_commanded_target = apply_target
+                                    elif abs(apply_target - last_commanded_target) >= 3:
+                                        completed = engine.ramp_brightness(
+                                            last_commanded_target,
+                                            apply_target,
+                                            lambda: worker_stop_event.is_set()
+                                            or generation != self.worker_generation,
+                                        )
+                                        if completed:
+                                            last_commanded_target = apply_target
+
+                        if not worker_stop_event.is_set() and generation == self.worker_generation:
+                            display_value = (
+                                value.value
+                                if isinstance(value, engine.AmbientMeasurement)
+                                else value
+                            )
+                            logging.info(
+                                "controller: raw=%.1f effective=%s filtered=%s target=%s "
+                                "dim=%s scene_boost=%s trend_penalty=%s",
+                                display_value,
+                                controller.last_effective_ambient,
+                                controller.filtered_ambient,
+                                last_measured_target,
+                                controller.last_dim_scene,
+                                controller.last_scene_boost,
+                                controller.last_trend_penalty,
+                            )
                             self.events.put(
                                 (
-                                    "status",
+                                    "reading",
                                     (
-                                        "Invalid camera reading",
-                                        "Waiting for next check",
-                                        "warning",
+                                        display_value,
+                                        last_measured_target,
+                                        decision,
                                     ),
                                 )
                             )
-                            wait_interval = decision.interval if decision else interval
-                            worker_stop_event.wait(
-                                wait_interval
-                                if adaptive
-                                else self.power_aware_interval(wait_interval)
-                            )
-                            continue
-                        last_measured_target = target
+                    wait_interval = decision.interval if decision else interval
 
-                        apply_target = target
-                        if gate is not None:
-                            apply_target = gate.observe(
-                                target, last_commanded_target
-                            )
+            except Exception as exc:
+                logging.exception("Brightness update failed")
+                self.events.put(("status", ("Update failed", str(exc), "error")))
+                wait_interval = adaptive.current_interval if adaptive else interval
 
-                        if not worker_stop_event.is_set() and generation == self.worker_generation:
-                            if apply_target is not None:
-                                with self.brightness_lock:
-                                    if not worker_stop_event.is_set() and generation == self.worker_generation:
-                                        if last_commanded_target is None:
-                                            engine.set_brightness(apply_target)
-                                            last_commanded_target = apply_target
-                                        elif abs(apply_target - last_commanded_target) >= 3:
-                                            completed = engine.ramp_brightness(
-                                                last_commanded_target,
-                                                apply_target,
-                                                lambda: worker_stop_event.is_set()
-                                                or generation != self.worker_generation,
-                                            )
-                                            if completed:
-                                                last_commanded_target = apply_target
-
-                            if not worker_stop_event.is_set() and generation == self.worker_generation:
-                                display_value = (
-                                    value.value
-                                    if isinstance(value, engine.AmbientMeasurement)
-                                    else value
-                                )
-                                logging.info(
-                                    "controller: raw=%.1f effective=%s filtered=%s target=%s "
-                                    "dim=%s scene_boost=%s trend_penalty=%s",
-                                    display_value,
-                                    controller.last_effective_ambient,
-                                    controller.filtered_ambient,
-                                    last_measured_target,
-                                    controller.last_dim_scene,
-                                    controller.last_scene_boost,
-                                    controller.last_trend_penalty,
-                                )
-                                self.events.put(
-                                    (
-                                        "reading",
-                                        (
-                                            display_value,
-                                            last_measured_target,
-                                            decision,
-                                        ),
-                                    )
-                                )
-                        wait_interval = decision.interval if decision else interval
-
-                except Exception as exc:
-                    logging.exception("Brightness update failed")
-                    self.events.put(("status", ("Update failed", str(exc), "error")))
-                    wait_interval = adaptive.current_interval if adaptive else interval
-
-                worker_stop_event.wait(
-                    wait_interval if adaptive else self.power_aware_interval(wait_interval)
-                )
-        finally:
-            if session is not None:
-                session.close()
+            worker_stop_event.wait(
+                wait_interval if adaptive else self.power_aware_interval(wait_interval)
+            )
 
         if self.worker_thread is threading.current_thread():
             self.worker_thread = None

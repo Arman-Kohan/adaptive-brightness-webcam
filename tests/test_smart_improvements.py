@@ -3,7 +3,7 @@
 Covered here:
 * the recalibrated ambient -> brightness curve (170.9 -> ~57%),
 * persistent settings in app_config (save/load across restarts),
-* the persistent CameraSession lifecycle (no reopen per sample),
+* the CameraSession lifecycle (one open/capture/release per cycle),
 * the BrightnessChangeGate anti-flicker rules,
 * autonomous adaptive scheduling (internal bounds, stability backoff,
   rapid-change response, brightness-error feedback),
@@ -506,24 +506,23 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
         owner.worker = app.BrightnessApp.worker.__get__(owner, type(owner))
         return owner
 
-    def test_smart_worker_stabilizes_then_applies_and_releases_camera(self):
+    def test_smart_worker_stabilizes_then_applies_without_persistent_camera(self):
         import app
 
         owner = self.make_owner()
         # Ambient sequence: stable 100 (target 38), tiny jitter, then a
-        # jump to 220 (target 71). The gate must ignore the first three
-        # proposals, apply 38 once, ignore jitter, and ramp on the jump.
+        # jump to 220. The gate must ignore the first three proposals,
+        # apply 38 once, ignore jitter, and ramp on the jump. Capture is
+        # intermittent: sample_camera runs once per cycle and no
+        # persistent CameraSession is ever created by the worker.
         ambient_values = iter([100.0, 100.0, 100.0, 100.0, 101.0, 99.0, 220.0])
-        session = mock.Mock()
 
-        def sample_detailed():
+        def sample(_camera, **_kwargs):
             try:
                 return next(ambient_values)
             except StopIteration:
                 owner.stop_event.set()
                 return 220.0
-
-        session.sample_detailed.side_effect = sample_detailed
 
         adaptive = mock.Mock()
         adaptive.current_interval = 0.0
@@ -533,7 +532,9 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
         )
 
         with mock.patch.object(
-            app.engine, "CameraSession", return_value=session
+            app.engine, "sample_camera", side_effect=sample
+        ) as sample_camera, mock.patch.object(
+            app.engine, "CameraSession"
         ) as session_class, mock.patch.object(
             app.engine, "AdaptiveSamplingController", return_value=adaptive
         ), mock.patch.object(
@@ -546,34 +547,29 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
                 app.SMART_ADAPTIVE_MODE, engine.AdaptiveSamplingConfig(),
             )
 
-        session_class.assert_called_once()
-        # Exactly one initial application, at the stabilized target.
+        session_class.assert_not_called()
+        self.assertGreaterEqual(sample_camera.call_count, 7)
         set_brightness.assert_called_once_with(38)
-        # The jump to a bright room ramps once from the applied level.
         ramp.assert_called_once()
         self.assertEqual(ramp.call_args.args[:2], (38, 58))
-        # Stopping the run releases the camera session exactly once.
-        session.close.assert_called_once()
 
     def test_smart_worker_camera_failure_keeps_loop_alive_until_stop(self):
         import app
 
         owner = self.make_owner()
-        session = mock.Mock()
         calls = {"count": 0}
 
-        def failing_sample():
+        def failing_sample(_camera, **_kwargs):
             calls["count"] += 1
             if calls["count"] >= 3:
                 owner.stop_event.set()
             return None
 
-        session.sample_detailed.side_effect = failing_sample
         adaptive = mock.Mock()
         adaptive.current_interval = 0.0
 
         with mock.patch.object(
-            app.engine, "CameraSession", return_value=session
+            app.engine, "sample_camera", side_effect=failing_sample
         ), mock.patch.object(
             app.engine, "AdaptiveSamplingController", return_value=adaptive
         ), mock.patch.object(
@@ -589,7 +585,242 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
         self.assertEqual(calls["count"], 3)
         set_brightness.assert_not_called()
         ramp.assert_not_called()
-        session.close.assert_called_once()
+
+
+class IntermittentCaptureTests(unittest.TestCase):
+    """Each measurement cycle: exactly one open, warm-up, capture, release."""
+
+    class ValidFrame:
+        shape = (2, 2, 3)
+        size = 12
+
+    def make_factory(self, fail_after=None):
+        created = []
+        outer = self
+
+        class FakeCamera:
+            def __init__(self):
+                self.read_count = 0
+                self.release_count = 0
+                created.append(self)
+
+            def isOpened(self):
+                return True
+
+            def get(self, _prop):
+                return 0.0
+
+            def set(self, _prop, _value):
+                return True
+
+            def read(self):
+                self.read_count += 1
+                if fail_after is not None and self.read_count > fail_after:
+                    return False, None
+                return True, outer.ValidFrame()
+
+            def release(self):
+                self.release_count += 1
+
+        return created, FakeCamera
+
+    def test_each_cycle_opens_and_releases_exactly_once(self):
+        created, factory = self.make_factory()
+        values = iter([100.0] * 10)
+        with mock.patch.object(
+            engine.cv2, "VideoCapture", side_effect=lambda *_a, **_k: factory()
+        ) as capture, mock.patch.object(
+            engine, "ambient_measurement",
+            side_effect=lambda _f: engine.AmbientMeasurement(
+                next(values), 0.0, 0.0, 0.0, 0.0, 0.0
+            ),
+        ), mock.patch.object(engine.time, "sleep"):
+            first = engine.sample_camera(0)
+            # Between cycles no camera object is alive: the first one
+            # was already released before the second cycle begins.
+            self.assertEqual(created[0].release_count, 1)
+            second = engine.sample_camera(0)
+
+        self.assertEqual((first, second), (100.0, 100.0))
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(len(created), 2)
+        for camera in created:
+            self.assertEqual(camera.release_count, 1)
+            self.assertEqual(
+                camera.read_count,
+                engine.CameraSession.WARMUP_FRAMES + engine.MEASUREMENT_SAMPLE_COUNT,
+            )
+
+    def test_warmup_frames_are_discarded_not_measured(self):
+        # Frames carry their exposure level: 220 during warm-up reads
+        # (unstable exposure), 100 afterwards. Only the five
+        # post-warm-up frames may influence the measurement.
+        outer = self
+
+        class TaggedCamera:
+            def __init__(self):
+                self.read_count = 0
+                self.release_count = 0
+
+            def isOpened(self):
+                return True
+
+            def get(self, _prop):
+                return 0.0
+
+            def set(self, _prop, _value):
+                return True
+
+            def read(self):
+                self.read_count += 1
+                frame = outer.ValidFrame()
+                frame.level = (
+                    220.0
+                    if self.read_count <= engine.CameraSession.WARMUP_FRAMES
+                    else 100.0
+                )
+                return True, frame
+
+            def release(self):
+                self.release_count += 1
+
+        with mock.patch.object(
+            engine.cv2, "VideoCapture", side_effect=lambda *_a, **_k: TaggedCamera()
+        ), mock.patch.object(
+            engine, "ambient_measurement",
+            side_effect=lambda f: engine.AmbientMeasurement(
+                f.level, 0.0, 0.0, 0.0, 0.0, 0.0
+            ),
+        ) as measure, mock.patch.object(engine.time, "sleep"):
+            result = engine.sample_camera(0)
+        self.assertEqual(result, 100.0)
+        self.assertEqual(measure.call_count, engine.MEASUREMENT_SAMPLE_COUNT)
+
+    def test_mid_cycle_failure_still_releases_camera(self):
+        created, factory = self.make_factory(fail_after=8)
+        with mock.patch.object(
+            engine.cv2, "VideoCapture", side_effect=lambda *_a, **_k: factory()
+        ), mock.patch.object(
+            engine, "ambient_measurement",
+            side_effect=lambda _f: engine.AmbientMeasurement(
+                100.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            ),
+        ), mock.patch.object(engine.time, "sleep"):
+            result = engine.sample_camera(0)
+        self.assertIsNone(result)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].release_count, 1)
+
+    def test_scheduling_with_intermittent_capture_limits_activations(self):
+        # Drive sample cycles from the adaptive scheduler over a
+        # simulated stable hour: activations must stay sparse, and the
+        # camera must be closed again after every single one.
+        created, factory = self.make_factory()
+        values = iter([100.0] * 500)
+        controller = engine.AdaptiveSamplingController()
+        timestamp = 0.0
+        activations = 0
+        with mock.patch.object(
+            engine.cv2, "VideoCapture", side_effect=lambda *_a, **_k: factory()
+        ), mock.patch.object(
+            engine, "ambient_measurement",
+            side_effect=lambda _f: engine.AmbientMeasurement(
+                next(values), 0.0, 0.0, 0.0, 0.0, 0.0
+            ),
+        ), mock.patch.object(engine.time, "sleep"):
+            while timestamp < 3600.0:
+                value = engine.sample_camera(0)
+                self.assertEqual(value, 100.0)
+                activations += 1
+                decision = controller.update(value, timestamp=timestamp)
+                timestamp += decision.interval
+        self.assertLess(activations, 60)
+        self.assertEqual(len(created), activations)
+        self.assertTrue(all(c.release_count == 1 for c in created))
+
+
+class PipelineCalibrationTests(unittest.TestCase):
+    """Regression tests for the FULL effective-brightness pipeline.
+
+    The v1.1.0 bug: the isolated curve mapped 173 -> 58%, but a real
+    bright-room scene reached 71-72% because _effective_ambient added
+    up to +54 of scene boost, and its bright-scene gating preserved
+    the full boost exactly when the scene was already bright. These
+    tests exercise controller.update() (boost, dim logic, cap,
+    filtering, hysteresis) rather than value_to_brightness() alone.
+    """
+
+    BRIGHT_SCENES_AT_173 = [
+        engine.AmbientMeasurement(173.0, 173.0, 173.0, 173.0, 0.0, 0.0, 173.0),
+        engine.AmbientMeasurement(173.0, 140.0, 190.0, 230.0, 90.0, 0.08, 110.0),
+        engine.AmbientMeasurement(173.0, 150.0, 185.0, 215.0, 65.0, 0.06, 130.0),
+        engine.AmbientMeasurement(173.0, 135.0, 195.0, 240.0, 105.0, 0.12, 100.0),
+        engine.AmbientMeasurement(173.0, 160.0, 180.0, 195.0, 35.0, 0.02, 145.0),
+    ]
+
+    def test_user_scenario_bright_room_at_173(self):
+        # The scene measured on the user's laptop (bright room, window
+        # highlights) produced 71% before the fix.
+        scene = self.BRIGHT_SCENES_AT_173[1]
+        target = engine.BrightnessController().update(scene)
+        self.assertGreaterEqual(target, 59)
+        self.assertLessEqual(target, 63)
+
+    def test_all_scene_shapes_at_173_stay_in_comfort_band(self):
+        for scene in self.BRIGHT_SCENES_AT_173:
+            with self.subTest(scene=scene):
+                target = engine.BrightnessController().update(scene)
+                self.assertGreaterEqual(target, 56)
+                self.assertLessEqual(target, 63)
+
+    def test_pipeline_never_exceeds_curve_plus_allowance(self):
+        scene_shapes = [
+            lambda v: engine.AmbientMeasurement(v, v, v, v, 0.0, 0.0, v),
+            lambda v: engine.AmbientMeasurement(
+                v, v * 0.8, v * 1.1, min(255.0, v * 1.35),
+                min(255.0, v * 1.35) - v * 0.8, 0.09, v * 0.62,
+            ),
+            lambda v: engine.AmbientMeasurement(
+                v, v * 0.72, v * 1.05, min(255.0, v * 1.4),
+                min(255.0, v * 1.4) - v * 0.72, 0.03, v * 0.55,
+            ),
+        ]
+        for value in (30.0, 60.0, 90.0, 120.0, 145.0, 160.0, 173.0, 190.0, 210.0, 235.0):
+            for make in scene_shapes:
+                with self.subTest(value=value):
+                    target = engine.BrightnessController().update(make(value))
+                    ceiling = engine.value_to_brightness(
+                        value
+                    ) + engine.scene_boost_allowance(value)
+                    self.assertLessEqual(target, ceiling + 1)
+
+    def test_exposure_compensation_cannot_bypass_the_cap(self):
+        calibration = engine.ExposureCalibration()
+        calibration.adjust(86.5, engine.CameraProperties(exposure=-6.0))
+        adjusted = calibration.adjust(86.5, engine.CameraProperties(exposure=-7.0))
+        self.assertEqual(adjusted, 173.0)
+        scene = engine.AmbientMeasurement(
+            adjusted, 140.0, 190.0, 230.0, 90.0, 0.08, 110.0
+        )
+        target = engine.BrightnessController().update(scene)
+        self.assertLessEqual(target, 63)
+
+    def test_dark_and_midrange_levels_are_preserved(self):
+        # Plain scalar readings (no scene context) follow the bare
+        # calibrated curve exactly; the cap must not distort them.
+        self.assertEqual(engine.BrightnessController().update(40.0), 21)
+        self.assertEqual(engine.BrightnessController().update(100.0), 38)
+        self.assertEqual(engine.BrightnessController().update(240.0), 75)
+
+    def test_boost_allowance_tapers_to_zero_in_bright_range(self):
+        self.assertEqual(
+            engine.scene_boost_allowance(100.0),
+            engine.DEFAULT_BRIGHTNESS_CONFIG.boost_cap_points,
+        )
+        self.assertEqual(engine.scene_boost_allowance(220.0), 0.0)
+        mid = engine.scene_boost_allowance(173.0)
+        self.assertGreater(mid, 0.0)
+        self.assertLess(mid, engine.DEFAULT_BRIGHTNESS_CONFIG.boost_cap_points)
 
 
 if __name__ == "__main__":
