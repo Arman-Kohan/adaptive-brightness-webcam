@@ -1673,8 +1673,28 @@ class BrightnessApp(ctk.CTk):
                             with self.brightness_lock:
                                 if not worker_stop_event.is_set() and generation == self.worker_generation:
                                     if last_commanded_target is None:
-                                        engine.set_brightness(apply_target)
-                                        last_commanded_target = apply_target
+                                        result = engine.apply_brightness(apply_target)
+                                        if result.ok:
+                                            last_commanded_target = (
+                                                result.readback
+                                                if result.readback is not None
+                                                else apply_target
+                                            )
+                                        else:
+                                            logging.error(
+                                                "brightness not applied: %s",
+                                                result,
+                                            )
+                                            self.events.put(
+                                                (
+                                                    "status",
+                                                    (
+                                                        "Brightness not applied",
+                                                        f"Target {apply_target}% could not be applied ({result.status}); will retry on the next check",
+                                                        "warning",
+                                                    ),
+                                                )
+                                            )
                                     elif abs(apply_target - last_commanded_target) >= 3:
                                         completed = engine.ramp_brightness(
                                             last_commanded_target,
@@ -1709,6 +1729,7 @@ class BrightnessApp(ctk.CTk):
                                         display_value,
                                         last_measured_target,
                                         decision,
+                                        last_commanded_target,
                                     ),
                                 )
                             )
@@ -1792,10 +1813,15 @@ class BrightnessApp(ctk.CTk):
                 if kind == "reading":
                     value, target = payload[:2]
                     decision = payload[2] if len(payload) > 2 else None
+                    applied = payload[3] if len(payload) > 3 else None
 
                     self.last_value_var.set(f"{value:.1f}")
                     self.last_target_var.set(f"{target}%")
-                    self.progress.set(target / 100)
+                    # The bar shows what the display actually runs at
+                    # (last applied/verified), not just the target.
+                    self.progress.set(
+                        (applied if applied is not None else target) / 100
+                    )
                     self.last_update_var.set(datetime.now().strftime("%H:%M:%S"))
                     if decision is not None:
                         self.current_interval_var.set(
@@ -1805,14 +1831,23 @@ class BrightnessApp(ctk.CTk):
                         self.trend_var.set(f"{decision.trend:+.2f}")
 
                     if self.is_running:
+                        applied_note = (
+                            f" · applied {applied}%"
+                            if applied is not None and applied != target
+                            else ""
+                        )
                         if decision is not None:
                             self.set_status(
                                 "Smart Adaptive running",
-                                f"{decision.state.title()} · next sample in {decision.interval:.1f}s",
+                                f"{decision.state.title()} · next sample in {decision.interval:.1f}s{applied_note}",
                                 "running",
                             )
                         else:
-                            self.set_status("Running", "Monitoring ambient light", "running")
+                            self.set_status(
+                                "Running",
+                                f"Monitoring ambient light{applied_note}",
+                                "running",
+                            )
 
                 elif kind == "status":
                     self.set_status(*payload)

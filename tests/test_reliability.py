@@ -1,4 +1,3 @@
-import logging
 import sys
 import threading
 import unittest
@@ -52,7 +51,7 @@ class BrightnessEngineTests(unittest.TestCase):
             engine.CameraProperties(exposure=-8.8, gain=28.0),
         )
 
-        self.assertEqual(engine.value_to_brightness(dark_room), 49)
+        self.assertEqual(engine.value_to_brightness(dark_room), 42)
         self.assertGreater(bright_room, dark_room)
         self.assertGreaterEqual(engine.value_to_brightness(bright_room), 60)
         self.assertLessEqual(engine.value_to_brightness(bright_room), 70)
@@ -78,17 +77,17 @@ class BrightnessEngineTests(unittest.TestCase):
         sunny_target = engine.BrightnessController().update(sunny_room)
         bright_target = engine.BrightnessController().update(bright_room)
 
-        self.assertEqual(dark_target, 49)
-        self.assertGreaterEqual(sunny_target, 60)
-        self.assertLessEqual(sunny_target, 70)
-        self.assertGreaterEqual(bright_target, 54)
-        self.assertLessEqual(bright_target, 62)
+        self.assertEqual(dark_target, 42)
+        self.assertGreaterEqual(sunny_target, 50)
+        self.assertLessEqual(sunny_target, 56)
+        self.assertGreaterEqual(bright_target, 47)
+        self.assertLessEqual(bright_target, 53)
 
     def test_personalized_bright_scene_calibration_is_smooth_and_bounded(self):
         samples = [
-            (145.0, 65, 95.0),
-            (132.3, 60, 90.0),
-            (123.0, 56, 85.0),
+            (145.0, 56, 95.0),
+            (132.3, 53, 90.0),
+            (123.0, 51, 85.0),
         ]
         targets = []
         for value, expected, spread in samples:
@@ -112,7 +111,7 @@ class BrightnessEngineTests(unittest.TestCase):
                     139.6, 139.6, 145.0, 157.0, 17.4, 0.01
                 )
             ),
-            49,
+            42,
         )
 
     def test_controller_target_is_the_brightness_request_sent_to_windows(self):
@@ -122,12 +121,15 @@ class BrightnessEngineTests(unittest.TestCase):
             lower_quartile=72.0,
         )
         controller_target = engine.BrightnessController().update(measurement)
-        with mock.patch.object(engine.subprocess, "run") as run:
+        self.assertEqual(controller_target, 52)
+        engine._default_applier = engine.BrightnessApplier()
+        with mock.patch.object(
+            engine, "_run_powershell", return_value=(0, "READBACK=52\n", "")
+        ) as run:
             engine.set_brightness(controller_target)
-        self.assertEqual(controller_target, 59)
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][-1], "59")
-        self.assertEqual(commands[1][-1], "59")
+        script = run.call_args.args[0]
+        self.assertIn("WmiSetBrightness", script)
+        self.assertIn("Brightness = [byte]52", script)
 
     def test_dim_sunset_scene_limits_boost_and_interpolates_downward(self):
         sunset = [
@@ -158,7 +160,7 @@ class BrightnessEngineTests(unittest.TestCase):
         illuminated_target = illuminated_controller.update(illuminated)
         self.assertFalse(illuminated_controller.last_dim_scene)
         self.assertLessEqual(dim_target, 56)
-        self.assertGreaterEqual(illuminated_target, 57)
+        self.assertGreaterEqual(illuminated_target, 50)
         self.assertGreater(illuminated_target, dim_target)
 
     def test_lights_on_transition_resets_dim_scene_history(self):
@@ -219,9 +221,11 @@ class BrightnessEngineTests(unittest.TestCase):
         self.assertLess(engine.value_to_brightness(stable_low), engine.value_to_brightness(stable_high))
 
     def test_brightness_curve_targets_comfortable_indoor_level(self):
-        self.assertEqual(engine.value_to_brightness(139.6), 49)
-        # User reference point: ~170.9 ambient should map to ~57%, not 67%.
-        self.assertEqual(engine.value_to_brightness(170.9), 57)
+        self.assertEqual(engine.value_to_brightness(139.6), 42)
+        # User reference points from on-device testing: 177.8 -> ~54%
+        # as the effective target; the curve itself lands exactly there.
+        self.assertEqual(engine.value_to_brightness(177.8), 54)
+        self.assertEqual(engine.value_to_brightness(170.9), 52)
 
     def test_brightness_curve_is_monotonic_and_bounded(self):
         values = [engine.value_to_brightness(value) for value in (0, 20, 60, 120, 180, 240, 255)]
@@ -241,8 +245,8 @@ class BrightnessEngineTests(unittest.TestCase):
         controller.update(40.0)
         normal = controller.update(80.0)
         self.assertEqual(controller.filtered_ambient, 54.0)
-        self.assertEqual(engine.value_to_brightness(54.0), 25)
-        self.assertEqual(normal, 25)
+        self.assertEqual(engine.value_to_brightness(54.0), 19)
+        self.assertEqual(normal, 19)
         self.assertLessEqual(
             abs(engine.value_to_brightness(54.0) - normal),
             engine.DEFAULT_BRIGHTNESS_CONFIG.brightness_hysteresis,
@@ -321,7 +325,7 @@ class BrightnessEngineTests(unittest.TestCase):
         self.assertTrue(camera.released)
 
     def test_ramp_reports_cancellation(self):
-        with mock.patch.object(engine, "set_brightness") as set_brightness:
+        with mock.patch.object(engine, "apply_brightness") as apply:
             cancelled = engine.ramp_brightness(
                 50,
                 53,
@@ -329,19 +333,19 @@ class BrightnessEngineTests(unittest.TestCase):
             )
 
         self.assertFalse(cancelled)
-        set_brightness.assert_not_called()
+        apply.assert_not_called()
 
     def test_ramp_reports_completion(self):
-        with mock.patch.object(engine, "set_brightness") as set_brightness, \
-             mock.patch.object(engine.time, "sleep"):
+        ok = engine.BrightnessApplicationResult(53, "verified", 53, 1, "wmi")
+        with mock.patch.object(engine, "apply_brightness", return_value=ok) as apply:
             completed = engine.ramp_brightness(50, 53)
 
         self.assertTrue(completed)
-        self.assertEqual(set_brightness.call_args_list, [mock.call(52), mock.call(53)])
+        self.assertEqual([call.args[0] for call in apply.call_args_list], [53])
 
-    def test_set_brightness_preserves_command_order_and_arguments(self):
+    def test_powercfg_fallback_preserves_command_order_and_arguments(self):
         with mock.patch.object(engine.subprocess, "run") as run:
-            engine.set_brightness(42)
+            engine._powercfg_set_brightness(42)
 
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(
@@ -371,7 +375,7 @@ class BrightnessEngineTests(unittest.TestCase):
             self.assertTrue(call.kwargs["capture_output"])
             self.assertTrue(call.kwargs["text"])
 
-    def test_set_brightness_reports_powercfg_diagnostics(self):
+    def test_powercfg_fallback_reports_diagnostics(self):
         failure = engine.subprocess.CalledProcessError(
             1,
             ["powercfg", "/SETACVALUEINDEX"],
@@ -379,13 +383,37 @@ class BrightnessEngineTests(unittest.TestCase):
         failure.stderr = "The parameter is incorrect."
         failure.stdout = ""
         with mock.patch.object(engine.subprocess, "run", side_effect=failure):
-            with self.assertLogs(level=logging.ERROR) as logs:
-                with self.assertRaisesRegex(
-                    RuntimeError, "AC brightness: The parameter is incorrect."
-                ):
-                    engine.set_brightness(42)
+            with self.assertRaisesRegex(
+                engine.BrightnessApiError, "The parameter is incorrect."
+            ):
+                engine._powercfg_set_brightness(42)
 
-        self.assertIn("powercfg failed during AC brightness", logs.output[0])
+    def test_wmi_set_and_read_parses_readback(self):
+        with mock.patch.object(
+            engine, "_run_powershell", return_value=(0, "READBACK=42\n", "")
+        ) as run:
+            self.assertEqual(engine._wmi_set_and_read_brightness(42), 42)
+        self.assertIn("WmiSetBrightness", run.call_args.args[0])
+
+    def test_wmi_failure_reports_diagnostics(self):
+        with mock.patch.object(
+            engine,
+            "_run_powershell",
+            return_value=(1, "", "The parameter is incorrect."),
+        ):
+            with self.assertRaisesRegex(
+                engine.BrightnessApiError, "The parameter is incorrect."
+            ):
+                engine._wmi_set_and_read_brightness(42)
+
+    def test_wmi_unavailable_is_classified_separately(self):
+        with mock.patch.object(
+            engine,
+            "_run_powershell",
+            return_value=(1, "", "Invalid class "),
+        ):
+            with self.assertRaises(engine.BrightnessUnavailableError):
+                engine._wmi_set_and_read_brightness(42)
 
     def test_cli_rejects_invalid_camera_and_interval(self):
         cases = [
@@ -773,22 +801,28 @@ class WorkerLifecycleTests(unittest.TestCase):
                  "BrightnessController",
                  return_value=mock.Mock(update=lambda value: value),
              ), \
-             mock.patch.object(app.engine, "set_brightness") as set_brightness, \
+             mock.patch.object(
+                 app.engine,
+                 "apply_brightness",
+                 return_value=app.engine.BrightnessApplicationResult(
+                     50, "verified", 50, 1, "wmi"
+                 ),
+             ) as apply_brightness, \
              mock.patch.object(app.engine, "ramp_brightness") as ramp:
             owner.worker(0, 30.0, 1, owner.stop_event)
 
-        return set_brightness, ramp
+        return apply_brightness, ramp
 
     def test_gradual_targets_compare_against_last_commanded_target(self):
-        set_brightness, ramp = self.run_targets([50, 51, 52, 53])
+        apply_brightness, ramp = self.run_targets([50, 51, 52, 53])
 
-        set_brightness.assert_called_once_with(50)
+        apply_brightness.assert_called_once_with(50)
         ramp.assert_called_once_with(50, 53, mock.ANY)
 
     def test_repeated_and_downward_targets_keep_commanded_state(self):
-        set_brightness, ramp = self.run_targets([50, 50, 51, 47])
+        apply_brightness, ramp = self.run_targets([50, 50, 51, 47])
 
-        set_brightness.assert_called_once_with(50)
+        apply_brightness.assert_called_once_with(50)
         ramp.assert_called_once_with(50, 47, mock.ANY)
 
     def test_command_failure_does_not_update_commanded_target(self):
@@ -812,11 +846,17 @@ class WorkerLifecycleTests(unittest.TestCase):
                  "BrightnessController",
                  return_value=mock.Mock(update=lambda value: value),
              ), \
-             mock.patch.object(app.engine, "set_brightness") as set_brightness, \
+             mock.patch.object(
+                 app.engine,
+                 "apply_brightness",
+                 return_value=app.engine.BrightnessApplicationResult(
+                     50, "verified", 50, 1, "wmi"
+                 ),
+             ) as apply_brightness, \
              mock.patch.object(app.engine, "ramp_brightness", side_effect=fail_ramp):
             owner.worker(0, 30.0, 1, owner.stop_event)
 
-        set_brightness.assert_called_once_with(50)
+        apply_brightness.assert_called_once_with(50)
 
     def test_ramp_cancellation_does_not_update_commanded_target(self):
         import app
@@ -839,11 +879,17 @@ class WorkerLifecycleTests(unittest.TestCase):
                  "BrightnessController",
                  return_value=mock.Mock(update=lambda value: value),
              ), \
-             mock.patch.object(app.engine, "set_brightness") as set_brightness, \
+             mock.patch.object(
+                 app.engine,
+                 "apply_brightness",
+                 return_value=app.engine.BrightnessApplicationResult(
+                     50, "verified", 50, 1, "wmi"
+                 ),
+             ) as apply_brightness, \
              mock.patch.object(app.engine, "ramp_brightness", side_effect=cancel_ramp) as ramp:
             owner.worker(0, 30.0, 1, owner.stop_event)
 
-        set_brightness.assert_called_once_with(50)
+        apply_brightness.assert_called_once_with(50)
         ramp.assert_called_once_with(50, 53, mock.ANY)
 
     def test_stale_worker_does_not_apply_brightness(self):
@@ -853,10 +899,10 @@ class WorkerLifecycleTests(unittest.TestCase):
         owner.worker_generation = 2
         with mock.patch.object(
             app.engine, "sample_camera", return_value=100
-        ), mock.patch.object(app.engine, "set_brightness") as set_brightness:
+        ), mock.patch.object(app.engine, "apply_brightness") as apply_brightness:
             owner.worker(0, 30.0, 1, owner.stop_event)
 
-        set_brightness.assert_not_called()
+        apply_brightness.assert_not_called()
 
     def test_generation_change_after_capture_does_not_apply_brightness(self):
         import app
@@ -870,10 +916,10 @@ class WorkerLifecycleTests(unittest.TestCase):
 
         with mock.patch.object(
             app.engine, "sample_camera", side_effect=capture
-        ), mock.patch.object(app.engine, "set_brightness") as set_brightness:
+        ), mock.patch.object(app.engine, "apply_brightness") as apply_brightness:
             owner.worker(0, 30.0, 1, owner.stop_event)
 
-        set_brightness.assert_not_called()
+        apply_brightness.assert_not_called()
 
     def test_worker_stop_event_prevents_second_sample(self):
         import app
@@ -895,11 +941,11 @@ class WorkerLifecycleTests(unittest.TestCase):
             return None
 
         with mock.patch.object(app.engine, "sample_camera", side_effect=unavailable), \
-             mock.patch.object(app.engine, "set_brightness") as set_brightness, \
+             mock.patch.object(app.engine, "apply_brightness") as apply_brightness, \
              mock.patch.object(app.engine, "ramp_brightness") as ramp:
             owner.worker(0, 30.0, 1, owner.stop_event)
 
-        set_brightness.assert_not_called()
+        apply_brightness.assert_not_called()
         ramp.assert_not_called()
 
     def test_smart_worker_uses_adaptive_interval_without_battery_multiplier(self):
@@ -919,7 +965,7 @@ class WorkerLifecycleTests(unittest.TestCase):
                  "BrightnessController",
                  return_value=mock.Mock(update=lambda value: 30),
              ), \
-             mock.patch.object(app.engine, "set_brightness"), \
+             mock.patch.object(app.engine, "apply_brightness"), \
              mock.patch.object(app.engine, "AdaptiveSamplingController") as adaptive_class:
             adaptive = adaptive_class.return_value
             adaptive.current_interval = 5.0

@@ -22,22 +22,26 @@ import adaptive_brightness as engine
 
 
 class CalibrationTests(unittest.TestCase):
-    def test_reference_point_170_9_maps_to_57(self):
-        self.assertEqual(engine.value_to_brightness(170.9), 57)
+    def test_reference_points_follow_user_comfort_curve(self):
+        # Successive on-device data points from the user; the latest:
+        # 177.8 must land at ~54% as the effective target.
+        self.assertEqual(engine.value_to_brightness(177.8), 54)
+        self.assertEqual(engine.value_to_brightness(170.9), 52)
 
     def test_calibration_table(self):
         expected = {
             0.0: 10,
-            20.0: 14,
-            40.0: 21,
-            60.0: 26,
-            80.0: 32,
-            100.0: 38,
-            120.0: 43,
-            139.6: 49,
-            150.0: 51,
-            170.9: 57,
-            200.0: 65,
+            20.0: 12,
+            40.0: 15,
+            60.0: 20,
+            80.0: 25,
+            100.0: 30,
+            120.0: 36,
+            139.6: 42,
+            150.0: 45,
+            170.9: 52,
+            177.8: 54,
+            200.0: 61,
             240.0: 75,
             255.0: 75,
         }
@@ -64,9 +68,9 @@ class CalibrationTests(unittest.TestCase):
 
     def test_plain_controller_reading_at_reference_point(self):
         measurement = engine.AmbientMeasurement(
-            170.9, 170.9, 170.9, 170.9, 0.0, 0.0, 170.9
+            177.8, 177.8, 177.8, 177.8, 0.0, 0.0, 177.8
         )
-        self.assertEqual(engine.BrightnessController().update(measurement), 57)
+        self.assertEqual(engine.BrightnessController().update(measurement), 54)
 
     def test_typical_scene_at_reference_point_stays_comfortable(self):
         measurement = engine.AmbientMeasurement(
@@ -74,8 +78,8 @@ class CalibrationTests(unittest.TestCase):
             scene_spread=35.0, highlight_ratio=0.02, lower_quartile=150.0,
         )
         target = engine.BrightnessController().update(measurement)
-        self.assertGreaterEqual(target, 55)
-        self.assertLessEqual(target, 60)
+        self.assertGreaterEqual(target, 50)
+        self.assertLessEqual(target, 54)
 
     def test_high_contrast_scene_no_longer_reaches_old_67(self):
         measurement = engine.AmbientMeasurement(
@@ -83,8 +87,8 @@ class CalibrationTests(unittest.TestCase):
             scene_spread=65.0, highlight_ratio=0.06, lower_quartile=130.0,
         )
         target = engine.BrightnessController().update(measurement)
-        self.assertLessEqual(target, 67)
-        self.assertGreaterEqual(target, 57)
+        self.assertLessEqual(target, 55)
+        self.assertGreaterEqual(target, 50)
 
 
 class ConfigPersistenceTests(unittest.TestCase):
@@ -510,9 +514,9 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
         import app
 
         owner = self.make_owner()
-        # Ambient sequence: stable 100 (target 38), tiny jitter, then a
+        # Ambient sequence: stable 100 (target 30), tiny jitter, then a
         # jump to 220. The gate must ignore the first three proposals,
-        # apply 38 once, ignore jitter, and ramp on the jump. Capture is
+        # apply 30 once, ignore jitter, and ramp on the jump. Capture is
         # intermittent: sample_camera runs once per cycle and no
         # persistent CameraSession is ever created by the worker.
         ambient_values = iter([100.0, 100.0, 100.0, 100.0, 101.0, 99.0, 220.0])
@@ -538,8 +542,11 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
         ) as session_class, mock.patch.object(
             app.engine, "AdaptiveSamplingController", return_value=adaptive
         ), mock.patch.object(
-            app.engine, "set_brightness"
-        ) as set_brightness, mock.patch.object(
+            app.engine, "apply_brightness",
+            return_value=engine.BrightnessApplicationResult(
+                30, "verified", 30, 1, "wmi"
+            ),
+        ) as apply_brightness, mock.patch.object(
             app.engine, "ramp_brightness", return_value=True
         ) as ramp:
             owner.worker(
@@ -549,9 +556,9 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
 
         session_class.assert_not_called()
         self.assertGreaterEqual(sample_camera.call_count, 7)
-        set_brightness.assert_called_once_with(38)
+        apply_brightness.assert_called_once_with(30)
         ramp.assert_called_once()
-        self.assertEqual(ramp.call_args.args[:2], (38, 58))
+        self.assertEqual(ramp.call_args.args[:2], (30, 50))
 
     def test_smart_worker_camera_failure_keeps_loop_alive_until_stop(self):
         import app
@@ -573,8 +580,8 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
         ), mock.patch.object(
             app.engine, "AdaptiveSamplingController", return_value=adaptive
         ), mock.patch.object(
-            app.engine, "set_brightness"
-        ) as set_brightness, mock.patch.object(
+            app.engine, "apply_brightness"
+        ) as apply_brightness, mock.patch.object(
             app.engine, "ramp_brightness"
         ) as ramp:
             owner.worker(
@@ -583,7 +590,7 @@ class SmartWorkerIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(calls["count"], 3)
-        set_brightness.assert_not_called()
+        apply_brightness.assert_not_called()
         ramp.assert_not_called()
 
 
@@ -763,15 +770,15 @@ class PipelineCalibrationTests(unittest.TestCase):
         # highlights) produced 71% before the fix.
         scene = self.BRIGHT_SCENES_AT_173[1]
         target = engine.BrightnessController().update(scene)
-        self.assertGreaterEqual(target, 59)
-        self.assertLessEqual(target, 63)
+        self.assertGreaterEqual(target, 50)
+        self.assertLessEqual(target, 55)
 
     def test_all_scene_shapes_at_173_stay_in_comfort_band(self):
         for scene in self.BRIGHT_SCENES_AT_173:
             with self.subTest(scene=scene):
                 target = engine.BrightnessController().update(scene)
-                self.assertGreaterEqual(target, 56)
-                self.assertLessEqual(target, 63)
+                self.assertGreaterEqual(target, 50)
+                self.assertLessEqual(target, 55)
 
     def test_pipeline_never_exceeds_curve_plus_allowance(self):
         scene_shapes = [
@@ -803,13 +810,13 @@ class PipelineCalibrationTests(unittest.TestCase):
             adjusted, 140.0, 190.0, 230.0, 90.0, 0.08, 110.0
         )
         target = engine.BrightnessController().update(scene)
-        self.assertLessEqual(target, 63)
+        self.assertLessEqual(target, 55)
 
     def test_dark_and_midrange_levels_are_preserved(self):
         # Plain scalar readings (no scene context) follow the bare
         # calibrated curve exactly; the cap must not distort them.
-        self.assertEqual(engine.BrightnessController().update(40.0), 21)
-        self.assertEqual(engine.BrightnessController().update(100.0), 38)
+        self.assertEqual(engine.BrightnessController().update(40.0), 15)
+        self.assertEqual(engine.BrightnessController().update(100.0), 30)
         self.assertEqual(engine.BrightnessController().update(240.0), 75)
 
     def test_boost_allowance_tapers_to_zero_in_bright_range(self):
@@ -818,9 +825,241 @@ class PipelineCalibrationTests(unittest.TestCase):
             engine.DEFAULT_BRIGHTNESS_CONFIG.boost_cap_points,
         )
         self.assertEqual(engine.scene_boost_allowance(220.0), 0.0)
-        mid = engine.scene_boost_allowance(173.0)
+        self.assertEqual(engine.scene_boost_allowance(173.0), 0.0)
+        mid = engine.scene_boost_allowance(160.0)
         self.assertGreater(mid, 0.0)
         self.assertLess(mid, engine.DEFAULT_BRIGHTNESS_CONFIG.boost_cap_points)
+
+
+class BrightnessApplicationTests(unittest.TestCase):
+    """The v1.2.0 application layer: verified, serialized, retried."""
+
+    def make_applier(self, set_and_read, **kwargs):
+        kwargs.setdefault("sleeper", lambda _seconds: None)
+        return engine.BrightnessApplier(set_and_read=set_and_read, **kwargs)
+
+    def test_verified_success_records_all_states(self):
+        applier = self.make_applier(lambda percent: percent)
+        result = applier.apply(55)
+        self.assertEqual(result.status, "verified")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.readback, 55)
+        self.assertEqual(applier.last_requested, 55)
+        self.assertEqual(applier.last_applied, 55)
+        self.assertEqual(applier.last_verified, 55)
+        self.assertIsNone(applier.last_error)
+
+    def test_unverified_success_is_not_reported_as_verified(self):
+        applier = self.make_applier(lambda percent: None)
+        result = applier.apply(55)
+        self.assertEqual(result.status, "applied_unverified")
+        self.assertTrue(result.ok)
+        self.assertEqual(applier.last_applied, 55)
+        self.assertIsNone(applier.last_verified)
+
+    def test_transient_failure_is_retried_with_backoff(self):
+        attempts = {"count": 0}
+        sleeps = []
+
+        def flaky(percent):
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise engine.BrightnessApiError("transient WMI error")
+            return percent
+
+        applier = engine.BrightnessApplier(
+            set_and_read=flaky, sleeper=sleeps.append
+        )
+        result = applier.apply(60)
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.attempts, 3)
+        self.assertEqual(sleeps, [0.3, 0.6])
+
+    def test_permanent_failure_reports_failed_and_keeps_state(self):
+        def broken(percent):
+            raise engine.BrightnessApiError("WMI exploded")
+
+        applier = self.make_applier(broken)
+        result = applier.apply(60)
+        self.assertEqual(result.status, "failed")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.attempts, 3)
+        self.assertIsNone(applier.last_applied)
+        self.assertIsNone(applier.last_verified)
+        self.assertIn("exploded", applier.last_error)
+
+    def test_readback_mismatch_is_retried_then_fails(self):
+        applier = self.make_applier(lambda percent: 30)
+        result = applier.apply(60)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.attempts, 3)
+        # The readback is still recorded as the known actual value.
+        self.assertEqual(applier.last_verified, 30)
+
+    def test_delayed_update_eventually_verifies(self):
+        readings = iter([40, 40, 55])
+        applier = self.make_applier(lambda percent: next(readings))
+        result = applier.apply(55)
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.attempts, 3)
+
+    def test_unavailable_wmi_falls_back_to_powercfg_unverified(self):
+        def unavailable(percent):
+            raise engine.BrightnessUnavailableError("no WMI classes")
+
+        fallback_calls = []
+        applier = engine.BrightnessApplier(
+            set_and_read=unavailable,
+            fallback_set=lambda percent: fallback_calls.append(percent),
+            sleeper=lambda _s: None,
+        )
+        result = applier.apply(48)
+        self.assertEqual(result.status, "applied_unverified")
+        self.assertEqual(result.method, "powercfg")
+        self.assertEqual(fallback_calls, [48])
+        self.assertIsNone(applier.last_verified)
+
+    def test_already_set_skips_api_only_when_verified(self):
+        calls = []
+        applier = self.make_applier(
+            lambda percent: calls.append(percent) or percent
+        )
+        applier.apply(55)
+        second = applier.apply(55)
+        self.assertEqual(second.status, "already_set")
+        self.assertEqual(second.attempts, 0)
+        self.assertEqual(calls, [55])
+
+    def test_unverified_value_is_never_skipped(self):
+        calls = []
+        applier = self.make_applier(
+            lambda percent: calls.append(percent) or None
+        )
+        applier.apply(55)
+        applier.apply(55)
+        self.assertEqual(calls, [55, 55])
+
+    def test_stale_request_is_superseded_without_api_call(self):
+        calls = []
+        applier = self.make_applier(
+            lambda percent: calls.append(percent) or percent
+        )
+        stale = applier.note_request(40)
+        applier.note_request(70)
+        result = applier.apply(40, generation=stale)
+        self.assertEqual(result.status, "superseded")
+        self.assertFalse(result.ok)
+        self.assertEqual(calls, [])
+
+    def test_concurrent_requests_are_serialized(self):
+        order = []
+        barrier = threading.Barrier(2)
+
+        def slow_set(percent):
+            order.append(("start", percent))
+            threading.Event().wait(0.05)
+            order.append(("end", percent))
+            return percent
+
+        applier = self.make_applier(slow_set)
+        results = {}
+
+        def apply_in_thread(name, value):
+            barrier.wait()
+            results[name] = applier.apply(value)
+
+        threads = [
+            threading.Thread(target=apply_in_thread, args=("a", 40)),
+            threading.Thread(target=apply_in_thread, args=("b", 70)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertTrue(all(r.ok for r in results.values()))
+        # No interleaving: each start is immediately followed by its end.
+        kinds = [kind for kind, _value in order]
+        self.assertEqual(kinds, ["start", "end", "start", "end"])
+        self.assertIn(applier.last_verified, (40, 70))
+
+    def test_set_brightness_wrapper_raises_on_failure(self):
+        original = engine._default_applier
+        engine._default_applier = self.make_applier(
+            lambda percent: (_ for _ in ()).throw(
+                engine.BrightnessApiError("nope")
+            )
+        )
+        try:
+            with self.assertRaises(RuntimeError):
+                engine.set_brightness(50)
+        finally:
+            engine._default_applier = original
+
+    def test_structured_logging_contains_required_fields(self):
+        applier = self.make_applier(lambda percent: percent)
+        with self.assertLogs("adaptive_brightness.application", level="INFO") as logs:
+            applier.apply(55)
+        line = logs.output[-1]
+        for field in ("target=55", "previous=None", "method=wmi",
+                      "attempt=1", "readback=55", "result=verified"):
+            self.assertIn(field, line)
+
+
+class BrightnessDiagnosticTests(unittest.TestCase):
+    """The on-hardware diagnostic's decision logic, with fake hardware."""
+
+    def load_diagnostic(self):
+        import brightness_diagnostic
+
+        return brightness_diagnostic
+
+    def test_verified_hardware_passes_and_restores(self):
+        diagnostic = self.load_diagnostic()
+        state = {"brightness": 50}
+
+        def fake_apply(percent):
+            state["brightness"] = percent
+            return engine.BrightnessApplicationResult(
+                percent, "verified", percent, 1, "wmi"
+            )
+
+        lines = []
+        code = diagnostic.run_diagnostic(
+            applier_apply=fake_apply,
+            read_current=lambda: state["brightness"],
+            out=lines.append,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(state["brightness"], 50)
+        self.assertTrue(any("PASS" in line for line in lines))
+
+    def test_unreadable_panel_returns_code_2(self):
+        diagnostic = self.load_diagnostic()
+        code = diagnostic.run_diagnostic(
+            applier_apply=lambda percent: None,
+            read_current=lambda: None,
+            out=lambda _line: None,
+        )
+        self.assertEqual(code, 2)
+
+    def test_unverified_step_fails_but_still_restores(self):
+        diagnostic = self.load_diagnostic()
+        state = {"brightness": 50}
+        applied = []
+
+        def lying_apply(percent):
+            applied.append(percent)
+            return engine.BrightnessApplicationResult(
+                percent, "applied_unverified", None, 1, "wmi"
+            )
+
+        code = diagnostic.run_diagnostic(
+            applier_apply=lying_apply,
+            read_current=lambda: state["brightness"],
+            out=lambda _line: None,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(applied[-1], 50)
 
 
 if __name__ == "__main__":
