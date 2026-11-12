@@ -7,6 +7,7 @@ import math
 import subprocess
 import threading
 import time
+from typing import NamedTuple
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,17 +36,19 @@ class BrightnessConfig:
     experience as unnecessarily bright for that lighting. The curve is now
     compressive (exponent 0.92, a Weber-Fechner-style response: responsive
     in dim light, gentle in bright light) and the scene boost is capped
-    lower, so the bare mapping sends 170.9 -> 57% and boosted real-world
-    scenes stay close to that target instead of overshooting it. The
-    mapping stays smooth and monotonic: neighbouring ambient values never
-    differ by more than about 1 brightness point per unit.
+    lower. Revised again after on-device testing (177.8 -> 61% was
+    still too bright; target ~54%): the exponent is now convex (1.25),
+    so 100 -> 30, 150 -> 45, 177.8 -> 54, 200 -> 61, 240 -> 75, while
+    the dark end stays usable (20 -> 12, 40 -> 15). The mapping stays
+    smooth and monotonic: neighbouring ambient values never differ by
+    more than about 1 brightness point per unit.
     """
 
     ambient_min: float = 8.0
     ambient_max: float = 240.0
     brightness_min: int = 10
     brightness_max: int = 75
-    curve_exponent: float = 0.92
+    curve_exponent: float = 1.25
     ambient_deadband: float = 3.0
     smoothing_alpha: float = 0.35
     sudden_change_alpha: float = 0.8
@@ -64,7 +67,7 @@ class BrightnessConfig:
     # BrightnessController.update and scene_boost_allowance().
     boost_cap_points: float = 15.0
     boost_cap_start: float = 0.55
-    boost_cap_end: float = 0.78
+    boost_cap_end: float = 0.70
     scene_spread_start: float = 25.0
     scene_spread_end: float = 95.0
     bright_scene_start: float = 118.0
@@ -459,82 +462,424 @@ def _validate_ambient(value: float) -> bool:
     return math.isfinite(value) and 0.0 <= value <= 255.0
 
 
-def set_brightness(percent: int) -> None:
+class BrightnessApiError(RuntimeError):
+    """The brightness API call itself failed (transient or permanent)."""
+
+
+class BrightnessUnavailableError(BrightnessApiError):
+    """The preferred brightness API does not exist on this machine."""
+
+
+class BrightnessApplicationResult(NamedTuple):
+    """Outcome of one brightness application request.
+
+    ``status`` is one of:
+    - ``verified``: API accepted the value and readback matches it.
+    - ``applied_unverified``: API accepted the value but the machine
+      offers no readback, so success cannot be confirmed.
+    - ``already_set``: skipped because the last *verified* value is
+      already the requested one (never used for unverified state).
+    - ``failed``: every attempt failed or readback never matched.
+    - ``superseded``: a newer request arrived; this one was dropped
+      so stale commands cannot override newer ones.
+    """
+
+    requested: int
+    status: str
+    readback: int | None
+    attempts: int
+    method: str
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status in ("verified", "applied_unverified", "already_set")
+
+
+_BRIGHTNESS_LOGGER = logging.getLogger("adaptive_brightness.application")
+
+
+def _run_powershell(script: str, timeout: float = 15.0) -> tuple[int, str, str]:
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        creationflags=no_window,
+    )
+    return completed.returncode, completed.stdout or "", completed.stderr or ""
+
+
+_WMI_UNAVAILABLE_MARKERS = (
+    "invalid class",
+    "invalid namespace",
+    "not found",
+    "no matching",
+    "0x80041010",
+    "0x8004100e",
+)
+
+
+def _wmi_set_and_read_brightness(percent: int) -> int | None:
+    """Set the internal panel brightness via WMI and read it back.
+
+    This is the mechanism Windows' own brightness slider uses for
+    internal laptop displays (root/WMI WmiMonitorBrightnessMethods.
+    WmiSetBrightness + WmiMonitorBrightness.CurrentBrightness). It
+    replaces the previous powercfg power-plan writes, which the
+    internal panel on many modern laptops (including the target
+    Lenovo) silently ignores. Returns the readback value, or None
+    when the set succeeded but no readback is offered. Raises
+    BrightnessUnavailableError when the WMI classes do not exist and
+    BrightnessApiError for other failures.
+    """
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$methods = Get-CimInstance -Namespace 'root/WMI' "
+        "-ClassName 'WmiMonitorBrightnessMethods'; "
+        "foreach ($m in $methods) { "
+        "Invoke-CimMethod -InputObject $m -MethodName 'WmiSetBrightness' "
+        f"-Arguments @{{ Timeout = [uint32]1; Brightness = [byte]{int(percent)} }} "
+        "| Out-Null }; "
+        "Start-Sleep -Milliseconds 200; "
+        "$b = Get-CimInstance -Namespace 'root/WMI' "
+        "-ClassName 'WmiMonitorBrightness' | Select-Object -First 1; "
+        "if ($null -ne $b) { Write-Output ('READBACK=' + $b.CurrentBrightness) }"
+    )
+    try:
+        returncode, stdout, stderr = _run_powershell(script)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BrightnessApiError(f"WMI brightness call failed to run: {exc}") from exc
+    if returncode != 0:
+        detail = (stderr or stdout).strip()
+        lowered = detail.lower()
+        if any(marker in lowered for marker in _WMI_UNAVAILABLE_MARKERS):
+            raise BrightnessUnavailableError(
+                f"WMI brightness classes unavailable: {detail[:200]}"
+            )
+        raise BrightnessApiError(
+            f"WMI WmiSetBrightness failed (exit {returncode}): {detail[:200]}"
+        )
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith("READBACK="):
+            try:
+                return int(line.split("=", 1)[1])
+            except ValueError:
+                return None
+    return None
+
+
+def _powercfg_set_brightness(percent: int) -> None:
+    """Legacy fallback: write the power-plan brightness values.
+
+    Only used when the WMI brightness classes do not exist at all.
+    The result cannot be verified, and on many modern laptops the
+    internal panel ignores these values entirely, so callers must
+    treat success as unverified.
+    """
     percent = max(10, min(100, int(percent)))
-    logging.info("brightness request: %s", percent)
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     commands = [
-        (
-            "AC brightness",
-            [
-                "powercfg",
-                "/SETACVALUEINDEX",
-                "SCHEME_CURRENT",
-                "SUB_VIDEO",
-                BRIGHTNESS_GUID,
-                str(percent),
-            ],
-        ),
-        (
-            "battery brightness",
-            [
-                "powercfg",
-                "/SETDCVALUEINDEX",
-                "SCHEME_CURRENT",
-                "SUB_VIDEO",
-                BRIGHTNESS_GUID,
-                str(percent),
-            ],
-        ),
-        ("power scheme refresh", ["powercfg", "/S", "SCHEME_CURRENT"]),
+        ["powercfg", "/SETACVALUEINDEX", "SCHEME_CURRENT", "SUB_VIDEO",
+         BRIGHTNESS_GUID, str(percent)],
+        ["powercfg", "/SETDCVALUEINDEX", "SCHEME_CURRENT", "SUB_VIDEO",
+         BRIGHTNESS_GUID, str(percent)],
+        ["powercfg", "/S", "SCHEME_CURRENT"],
     ]
-
-    for operation, command in commands:
+    for command in commands:
         try:
             subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
+                command, check=True, capture_output=True, text=True,
                 creationflags=no_window,
             )
         except FileNotFoundError as exc:
-            raise RuntimeError("Windows powercfg command was not found.") from exc
+            raise BrightnessUnavailableError(
+                "Windows powercfg command was not found."
+            ) from exc
         except subprocess.CalledProcessError as exc:
             diagnostic = (exc.stderr or exc.stdout or "").strip()
-            detail = f": {diagnostic}" if diagnostic else ""
-            logging.error(
-                "powercfg failed during %s: returncode=%s stderr=%r stdout=%r",
-                operation,
-                exc.returncode,
-                exc.stderr,
-                exc.stdout,
-            )
-            raise RuntimeError(
-                f"Windows brightness control failed during {operation}{detail}"
+            raise BrightnessApiError(
+                f"powercfg brightness fallback failed: {diagnostic[:200]}"
             ) from exc
+
+
+def get_current_brightness() -> int | None:
+    """Read the actual internal-display brightness via WMI, if offered."""
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$b = Get-CimInstance -Namespace 'root/WMI' "
+        "-ClassName 'WmiMonitorBrightness' | Select-Object -First 1; "
+        "if ($null -ne $b) { Write-Output ('READBACK=' + $b.CurrentBrightness) }"
+    )
+    try:
+        returncode, stdout, _stderr = _run_powershell(script)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if returncode != 0:
+        return None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith("READBACK="):
+            try:
+                return int(line.split("=", 1)[1])
+            except ValueError:
+                return None
+    return None
+
+
+class BrightnessApplier:
+    """Serialized, verified brightness application.
+
+    State is deliberately split into what was *requested*, what the
+    API *accepted*, and what readback *verified* — the previous
+    implementation tracked none of these and treated a powercfg exit
+    code 0 as proof the panel had changed, which it often had not.
+
+    All applications are serialized on one lock so the worker, ramps,
+    and manual controls can never issue competing commands. A
+    monotonically increasing generation counter lets newer requests
+    supersede older in-flight ones (ramps check it between steps).
+    Transient failures and readback mismatches are retried with
+    bounded backoff. Every attempt is logged with target, previous
+    known value, method, attempt number, API status, readback, and
+    the final result.
+    """
+
+    def __init__(
+        self,
+        set_and_read=None,
+        fallback_set=None,
+        sleeper=time.sleep,
+        clock=time.monotonic,
+        max_attempts: int = 3,
+        verify_window: float = 60.0,
+    ):
+        self._set_and_read = set_and_read or _wmi_set_and_read_brightness
+        self._fallback_set = fallback_set or _powercfg_set_brightness
+        self._sleeper = sleeper
+        self._clock = clock
+        self._max_attempts = max(1, int(max_attempts))
+        self._verify_window = float(verify_window)
+        self._lock = threading.Lock()
+        self._generation = 0
+        self.last_requested: int | None = None
+        self.last_applied: int | None = None
+        self.last_verified: int | None = None
+        self.last_verified_at: float | None = None
+        self.last_error: str | None = None
+
+    def note_request(self, percent: int) -> int:
+        """Record a new request and return its generation token."""
+        with self._lock:
+            self._generation += 1
+            self.last_requested = int(percent)
+            return self._generation
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def state(self) -> dict:
+        return {
+            "last_requested": self.last_requested,
+            "last_applied": self.last_applied,
+            "last_verified": self.last_verified,
+            "last_error": self.last_error,
+            "generation": self._generation,
+        }
+
+    def apply(
+        self, percent: int, *, generation: int | None = None
+    ) -> BrightnessApplicationResult:
+        percent = max(10, min(100, int(percent)))
+        if generation is None:
+            generation = self.note_request(percent)
+        else:
+            with self._lock:
+                self.last_requested = percent
+        with self._lock:
+            if generation != self._generation:
+                return BrightnessApplicationResult(
+                    percent, "superseded", self.last_verified, 0, "none",
+                    "a newer brightness request superseded this one",
+                )
+            if (
+                self.last_verified == percent
+                and self.last_verified_at is not None
+                and self._clock() - self.last_verified_at < self._verify_window
+            ):
+                _BRIGHTNESS_LOGGER.info(
+                    "brightness_apply target=%s previous=%s method=none "
+                    "attempt=0 status=already_set readback=%s result=skip",
+                    percent, self.last_verified, self.last_verified,
+                )
+                return BrightnessApplicationResult(
+                    percent, "already_set", self.last_verified, 0, "none"
+                )
+
+            previous = self.last_verified
+            last_error: str | None = None
+            for attempt in range(1, self._max_attempts + 1):
+                if generation != self._generation:
+                    return BrightnessApplicationResult(
+                        percent, "superseded", self.last_verified,
+                        attempt - 1, "wmi",
+                        "a newer brightness request superseded this one",
+                    )
+                try:
+                    readback = self._set_and_read(percent)
+                except BrightnessUnavailableError:
+                    # The preferred API does not exist on this machine:
+                    # one unverified attempt through the legacy fallback.
+                    try:
+                        self._fallback_set(percent)
+                    except BrightnessApiError as exc:
+                        last_error = str(exc)
+                        _BRIGHTNESS_LOGGER.warning(
+                            "brightness_apply target=%s previous=%s "
+                            "method=powercfg attempt=%s status=error "
+                            "readback=None error=%r result=failed",
+                            percent, previous, attempt, last_error,
+                        )
+                        return self._record_failure(
+                            percent, attempt, "powercfg", last_error
+                        )
+                    self.last_applied = percent
+                    self.last_error = None
+                    _BRIGHTNESS_LOGGER.info(
+                        "brightness_apply target=%s previous=%s "
+                        "method=powercfg attempt=%s status=accepted "
+                        "readback=None result=applied_unverified",
+                        percent, previous, attempt,
+                    )
+                    return BrightnessApplicationResult(
+                        percent, "applied_unverified", None, attempt, "powercfg"
+                    )
+                except BrightnessApiError as exc:
+                    last_error = str(exc)
+                    _BRIGHTNESS_LOGGER.warning(
+                        "brightness_apply target=%s previous=%s method=wmi "
+                        "attempt=%s status=error readback=None error=%r",
+                        percent, previous, attempt, last_error,
+                    )
+                else:
+                    self.last_applied = percent
+                    if readback is None:
+                        self.last_error = None
+                        _BRIGHTNESS_LOGGER.info(
+                            "brightness_apply target=%s previous=%s "
+                            "method=wmi attempt=%s status=accepted "
+                            "readback=None result=applied_unverified",
+                            percent, previous, attempt,
+                        )
+                        return BrightnessApplicationResult(
+                            percent, "applied_unverified", None, attempt, "wmi"
+                        )
+                    self.last_verified = int(readback)
+                    self.last_verified_at = self._clock()
+                    if int(readback) == percent:
+                        self.last_error = None
+                        _BRIGHTNESS_LOGGER.info(
+                            "brightness_apply target=%s previous=%s "
+                            "method=wmi attempt=%s status=accepted "
+                            "readback=%s result=verified",
+                            percent, previous, attempt, readback,
+                        )
+                        return BrightnessApplicationResult(
+                            percent, "verified", int(readback), attempt, "wmi"
+                        )
+                    last_error = (
+                        f"readback {readback} does not match requested {percent}"
+                    )
+                    _BRIGHTNESS_LOGGER.warning(
+                        "brightness_apply target=%s previous=%s method=wmi "
+                        "attempt=%s status=mismatch readback=%s error=%r",
+                        percent, previous, attempt, readback, last_error,
+                    )
+                if attempt < self._max_attempts:
+                    self._sleeper(0.3 * (2 ** (attempt - 1)))
+            return self._record_failure(
+                percent, self._max_attempts, "wmi", last_error
+            )
+
+    def _record_failure(self, percent, attempts, method, error):
+        self.last_error = error
+        _BRIGHTNESS_LOGGER.error(
+            "brightness_apply target=%s method=%s attempts=%s "
+            "status=failed error=%r result=failed",
+            percent, method, attempts, error,
+        )
+        return BrightnessApplicationResult(
+            percent, "failed", self.last_verified, attempts, method, error
+        )
+
+
+_default_applier = BrightnessApplier()
+
+
+def apply_brightness(
+    percent: int, *, generation: int | None = None
+) -> BrightnessApplicationResult:
+    """Apply brightness through the shared verified applier."""
+    return _default_applier.apply(percent, generation=generation)
+
+
+def note_brightness_request(percent: int) -> int:
+    """Register a forthcoming brightness request; returns its token."""
+    return _default_applier.note_request(percent)
+
+
+def get_brightness_state() -> dict:
+    """Snapshot of requested/applied/verified brightness state."""
+    return _default_applier.state()
+
+
+def set_brightness(percent: int) -> None:
+    """Backwards-compatible setter: raises RuntimeError on failure.
+
+    New code should prefer :func:`apply_brightness`, which reports
+    verified vs. unverified success instead of implying it.
+    """
+    result = apply_brightness(percent)
+    if not result.ok:
+        raise RuntimeError(
+            result.error or f"brightness application failed ({result.status})"
+        )
+
 
 def ramp_brightness(start: int, end: int, cancel_check=None) -> bool:
     """
-    Smoothly move brightness from start to end.
-    cancel_check is an optional callable. If it returns True,
-    the ramp is cancelled.
-    Returns True when the end target was reached, or False when cancelled.
+    Smoothly move brightness from start to end through the applier.
+
+    At most a handful of intermediate steps are used (each step is a
+    verified WMI call now, not a cheap powercfg spawn). Returns True
+    when the end target was applied, False when cancelled, superseded
+    by a newer request, or when application failed.
     """
+    start = int(start)
+    end = int(end)
     if start == end:
         return True
-    step = 2 if end > start else -2
-    value = start
-    while (step > 0 and value < end) or (step < 0 and value > end):
+    generation = note_brightness_request(end)
+    distance = abs(end - start)
+    steps = max(1, min(5, (distance + 4) // 5))
+    values = []
+    for index in range(1, steps + 1):
+        value = round(start + (end - start) * index / steps)
+        if not values or values[-1] != value:
+            values.append(value)
+    if values[-1] != end:
+        values.append(end)
+    for value in values:
         if cancel_check is not None and cancel_check():
             return False
-        value += step
-        value = max(10, min(100, value))
-        if (step > 0 and value > end) or (step < 0 and value < end):
-            value = end
-        set_brightness(value)
-        time.sleep(0.12)
+        result = apply_brightness(value, generation=generation)
+        if not result.ok:
+            return False
     return True
+
 
 def ambient_measurement(frame) -> AmbientMeasurement:
     """Estimate illumination and scene context from robust luminance statistics."""
@@ -1301,9 +1646,9 @@ def main() -> None:
                     try:
                         if last_target is None:
                             set_brightness(apply_target)
-                        else:
-                            ramp_brightness(last_target, apply_target)
-                        last_target = apply_target
+                            last_target = apply_target
+                        elif ramp_brightness(last_target, apply_target):
+                            last_target = apply_target
                     except Exception:
                         logging.exception("Brightness update failed")
                 wait_interval = (
