@@ -25,6 +25,7 @@ except ImportError:
 
 import customtkinter as ctk
 import adaptive_brightness as engine
+import app_config
 
 APP_NAME = "Adaptive Brightness Webcam"
 AUTOSTART_FLAG = "--autostart"
@@ -92,7 +93,11 @@ def sampling_mode_visibility(mode: str) -> tuple[bool, bool]:
 def sampling_mode_description(mode: str) -> str:
     """Return concise help for the currently selected sampling mode."""
     if mode == SMART_ADAPTIVE_MODE:
-        return "Starts at 5 seconds and adjusts between the configured limits as lighting changes."
+        return (
+            "Schedules measurements automatically: frequent checks while "
+            "light is changing, sparse checks when it is stable. There "
+            "are no interval limits to configure."
+        )
     return "Checks on the configured schedule. Battery mode may increase the wait between checks."
 
 
@@ -345,7 +350,14 @@ class BrightnessApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
 
-        self.theme_mode_var = ctk.StringVar(value="Windows")
+        # Restore persisted preferences before any variable is built,
+        # so a restart (including a Windows reboot / autostart launch)
+        # comes back exactly as the user left it. Loading never writes,
+        # so defaults cannot overwrite valid saved preferences here.
+        self._saved_settings = app_config.load_settings()
+        self._persist_job = None
+
+        self.theme_mode_var = ctk.StringVar(value=self._saved_settings.theme_mode)
         self.current_theme = get_windows_theme()
         ctk.set_appearance_mode(self.current_theme)
 
@@ -379,15 +391,27 @@ class BrightnessApp(ctk.CTk):
 
         self.camera_chips = []
 
-        # Settings variables
-        self.camera_var = ctk.StringVar(value="0")
-        self.mode_var = ctk.StringVar(value=resolve_sampling_mode())
+        # Settings variables (restored from the settings file above)
+        self.camera_var = ctk.StringVar(value=str(self._saved_settings.camera_index))
+        self.mode_var = ctk.StringVar(
+            value=resolve_sampling_mode(self._saved_settings.sampling_mode)
+        )
         self.mode_hint_var = ctk.StringVar(value="")
-        self.interval_var = ctk.StringVar(value=str(engine.DEFAULT_FIXED_INTERVAL))
-        self.minimum_interval_var = ctk.StringVar(value="2")
-        self.maximum_interval_var = ctk.StringVar(value="60")
+        self.interval_var = ctk.StringVar(
+            value=str(self._saved_settings.fixed_interval)
+        )
         self.startup_var = ctk.BooleanVar(value=self.startup_enabled())
-        self.close_to_tray_var = ctk.BooleanVar(value=True)
+        self.close_to_tray_var = ctk.BooleanVar(
+            value=self._saved_settings.close_to_tray
+        )
+        for variable in (
+            self.camera_var,
+            self.mode_var,
+            self.interval_var,
+            self.theme_mode_var,
+            self.close_to_tray_var,
+        ):
+            self._trace(variable, self._schedule_persist)
 
         # Stats variables
         self.last_value_var = ctk.StringVar(value="-")
@@ -988,7 +1012,7 @@ class BrightnessApp(ctk.CTk):
 
         self.ios_hint(
             container,
-            "0 is usually the built-in webcam. The camera only wakes for a short sample.",
+            "0 is usually the built-in webcam. Smart Adaptive keeps the camera open while automation runs; Fixed mode wakes it only for each sample.",
         )
         self.ios_divider(container)
 
@@ -1047,35 +1071,14 @@ class BrightnessApp(ctk.CTk):
             fg_color="transparent",
         )
         self.adaptive_settings.pack(fill="x")
-        self.ios_section_title(self.adaptive_settings, "Smart mode limits")
-        limits_row = self.make_frame(
-            self.adaptive_settings, bg_color=APP_BG, fg_color="transparent"
-        )
-        limits_row.pack(fill="x")
-        for label, variable in (
-            ("Minimum seconds", self.minimum_interval_var),
-            ("Maximum seconds", self.maximum_interval_var),
-        ):
-            field = self.make_frame(limits_row, bg_color=APP_BG, fg_color="transparent")
-            field.pack(side="left", fill="x", expand=True, padx=(0, 8))
-            ctk.CTkLabel(
-                field, text=label, font=("Segoe UI", 9), text_color=TEXT_SECONDARY
-            ).pack(anchor="w")
-            ctk.CTkEntry(
-                field,
-                textvariable=variable,
-                width=100,
-                height=38,
-                corner_radius=12,
-                fg_color=FIELD_BG,
-                border_color=FIELD_BORDER,
-                border_width=1,
-                text_color=TEXT_PRIMARY,
-                justify="center",
-            ).pack(anchor="w", pady=(4, 0))
+        self.ios_section_title(self.adaptive_settings, "Smart Adaptive")
         self.ios_hint(
             self.adaptive_settings,
-            "Smart mode starts at 5 seconds and progressively moves between these limits.",
+            "Smart Adaptive decides when to measure on its own: frequent "
+            "checks while your lighting is changing, sparse checks when "
+            "the room is stable. It keeps one camera session open "
+            "instead of restarting the webcam for every check, and the "
+            "current interval is shown under Live readings.",
         )
         self._refresh_sampling_mode()
         self.ios_divider(container)
@@ -1130,7 +1133,7 @@ class BrightnessApp(ctk.CTk):
 
         ctk.CTkLabel(
             note,
-            text="The camera is active only for a brief sample. No frames are saved.",
+            text="No frames are saved or uploaded. Fixed mode samples briefly; Smart Adaptive keeps the camera open while running.",
             font=("Segoe UI", 10),
             text_color=TEXT_SECONDARY,
             wraplength=480,
@@ -1157,6 +1160,43 @@ class BrightnessApp(ctk.CTk):
                 self.interval_entry.configure(state="normal")
         except AttributeError:
             pass
+
+    # ------------------------------------------------------------
+    # Settings persistence
+    # ------------------------------------------------------------
+    def _current_settings(self) -> app_config.AppSettings:
+        try:
+            camera_index = int(self.camera_var.get())
+        except (TypeError, ValueError):
+            camera_index = self._saved_settings.camera_index
+        try:
+            fixed_interval = float(self.interval_var.get())
+        except (TypeError, ValueError):
+            fixed_interval = self._saved_settings.fixed_interval
+        return app_config.AppSettings(
+            camera_index=camera_index,
+            sampling_mode=resolve_sampling_mode(self.mode_var.get()),
+            fixed_interval=fixed_interval,
+            theme_mode=self.theme_mode_var.get(),
+            close_to_tray=bool(self.close_to_tray_var.get()),
+        )
+
+    def _persist_settings(self) -> None:
+        self._persist_job = None
+        self._saved_settings = self._current_settings()
+        app_config.save_settings(self._saved_settings)
+
+    def _schedule_persist(self, *_args) -> None:
+        if self._persist_job is not None:
+            try:
+                self.after_cancel(self._persist_job)
+            except Exception:
+                pass
+            self._persist_job = None
+        try:
+            self._persist_job = self.after(600, self._persist_settings)
+        except Exception:
+            self._persist_settings()
 
     def on_sampling_mode_change(self, _value=None):
         if self.is_running:
@@ -1501,22 +1541,11 @@ class BrightnessApp(ctk.CTk):
         ):
             self.show_toast("Interval must be a finite value of at least 30 seconds.", "error")
             return
-        adaptive_config = None
-        if mode == SMART_ADAPTIVE_MODE:
-            try:
-                minimum_interval = float(self.minimum_interval_var.get())
-                maximum_interval = float(self.maximum_interval_var.get())
-                adaptive_config = engine.AdaptiveSamplingConfig(
-                    minimum_interval=minimum_interval,
-                    maximum_interval=maximum_interval,
-                    initial_interval=max(
-                        minimum_interval,
-                        min(5.0, maximum_interval),
-                    ),
-                )
-            except (TypeError, ValueError) as exc:
-                self.show_toast(f"Invalid smart-mode limits: {exc}", "error")
-                return
+        adaptive_config = (
+            engine.AdaptiveSamplingConfig()
+            if mode == SMART_ADAPTIVE_MODE
+            else None
+        )
 
         worker_stop_event = threading.Event()
         self.stop_event = worker_stop_event
@@ -1540,6 +1569,7 @@ class BrightnessApp(ctk.CTk):
         self.set_status(status_text, "Monitoring ambient light", "running")
         self.refresh_run_controls()
         self.update_tray_state()
+        self._persist_settings()
         self.show_toast("Automation started", "success")
 
     def stop(self):
@@ -1568,102 +1598,138 @@ class BrightnessApp(ctk.CTk):
     ):
         controller = engine.BrightnessController()
         calibration = engine.ExposureCalibration()
+        smart = mode == SMART_ADAPTIVE_MODE
         adaptive = (
             engine.AdaptiveSamplingController(adaptive_config)
-            if mode == SMART_ADAPTIVE_MODE
+            if smart
+            else None
+        )
+        # Smart Adaptive keeps one camera session for the whole run and
+        # passes every proposed brightness through the anti-flicker
+        # gate. Fixed mode keeps the original one-shot sampling path.
+        gate = engine.BrightnessChangeGate() if smart else None
+        session = (
+            engine.CameraSession(camera, calibration=calibration)
+            if smart
             else None
         )
         last_measured_target = None
         last_commanded_target = None
 
-        while not worker_stop_event.is_set() and generation == self.worker_generation:
-            try:
-                with self.camera_lock:
-                    value = engine.sample_camera(
-                        camera,
-                        calibration=calibration,
-                        detailed=True,
-                    )
-
-                if value is None:
-                    self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
-                    wait_interval = adaptive.current_interval if adaptive else interval
-                else:
-                    decision = adaptive.update(value) if adaptive else None
-                    target = controller.update(value)
-                    if target is None:
-                        self.events.put(
-                            (
-                                "status",
-                                (
-                                    "Invalid camera reading",
-                                    "Waiting for next check",
-                                    "warning",
-                                ),
+        try:
+            while not worker_stop_event.is_set() and generation == self.worker_generation:
+                try:
+                    with self.camera_lock:
+                        if session is not None:
+                            value = session.sample_detailed()
+                        else:
+                            value = engine.sample_camera(
+                                camera,
+                                calibration=calibration,
+                                detailed=True,
                             )
+
+                    if value is None:
+                        self.events.put(("status", ("Camera unavailable", "Waiting for next check", "warning")))
+                        wait_interval = adaptive.current_interval if adaptive else interval
+                    else:
+                        target = controller.update(value)
+                        brightness_error = (
+                            target - last_commanded_target
+                            if target is not None
+                            and last_commanded_target is not None
+                            else None
                         )
-                        wait_interval = decision.interval if decision else interval
-                        worker_stop_event.wait(
-                            wait_interval
+                        decision = (
+                            adaptive.update(
+                                value, brightness_error=brightness_error
+                            )
                             if adaptive
-                            else self.power_aware_interval(wait_interval)
+                            else None
                         )
-                        continue
-                    last_measured_target = target
-
-                    if not worker_stop_event.is_set() and generation == self.worker_generation:
-                        with self.brightness_lock:
-                            if not worker_stop_event.is_set() and generation == self.worker_generation:
-                                if last_commanded_target is None:
-                                    engine.set_brightness(target)
-                                    last_commanded_target = target
-                                elif abs(target - last_commanded_target) >= 3:
-                                    completed = engine.ramp_brightness(
-                                        last_commanded_target,
-                                        target,
-                                        lambda: worker_stop_event.is_set()
-                                        or generation != self.worker_generation,
-                                    )
-                                    if completed:
-                                        last_commanded_target = target
-
-                        if not worker_stop_event.is_set() and generation == self.worker_generation:
-                            display_value = (
-                                value.value
-                                if isinstance(value, engine.AmbientMeasurement)
-                                else value
-                            )
-                            logging.info(
-                                "controller: raw=%.1f effective=%s filtered=%s target=%s "
-                                "dim=%s scene_boost=%s trend_penalty=%s",
-                                display_value,
-                                controller.last_effective_ambient,
-                                controller.filtered_ambient,
-                                last_measured_target,
-                                controller.last_dim_scene,
-                                controller.last_scene_boost,
-                                controller.last_trend_penalty,
-                            )
+                        if target is None:
                             self.events.put(
                                 (
-                                    "reading",
+                                    "status",
                                     (
-                                        display_value,
-                                        last_measured_target,
-                                        decision,
+                                        "Invalid camera reading",
+                                        "Waiting for next check",
+                                        "warning",
                                     ),
                                 )
                             )
-                    wait_interval = decision.interval if decision else interval
+                            wait_interval = decision.interval if decision else interval
+                            worker_stop_event.wait(
+                                wait_interval
+                                if adaptive
+                                else self.power_aware_interval(wait_interval)
+                            )
+                            continue
+                        last_measured_target = target
 
-            except Exception as exc:
-                logging.exception("Brightness update failed")
-                self.events.put(("status", ("Update failed", str(exc), "error")))
-                wait_interval = adaptive.current_interval if adaptive else interval
+                        apply_target = target
+                        if gate is not None:
+                            apply_target = gate.observe(
+                                target, last_commanded_target
+                            )
 
-            worker_stop_event.wait(
-                wait_interval if adaptive else self.power_aware_interval(wait_interval)
-            )
+                        if not worker_stop_event.is_set() and generation == self.worker_generation:
+                            if apply_target is not None:
+                                with self.brightness_lock:
+                                    if not worker_stop_event.is_set() and generation == self.worker_generation:
+                                        if last_commanded_target is None:
+                                            engine.set_brightness(apply_target)
+                                            last_commanded_target = apply_target
+                                        elif abs(apply_target - last_commanded_target) >= 3:
+                                            completed = engine.ramp_brightness(
+                                                last_commanded_target,
+                                                apply_target,
+                                                lambda: worker_stop_event.is_set()
+                                                or generation != self.worker_generation,
+                                            )
+                                            if completed:
+                                                last_commanded_target = apply_target
+
+                            if not worker_stop_event.is_set() and generation == self.worker_generation:
+                                display_value = (
+                                    value.value
+                                    if isinstance(value, engine.AmbientMeasurement)
+                                    else value
+                                )
+                                logging.info(
+                                    "controller: raw=%.1f effective=%s filtered=%s target=%s "
+                                    "dim=%s scene_boost=%s trend_penalty=%s",
+                                    display_value,
+                                    controller.last_effective_ambient,
+                                    controller.filtered_ambient,
+                                    last_measured_target,
+                                    controller.last_dim_scene,
+                                    controller.last_scene_boost,
+                                    controller.last_trend_penalty,
+                                )
+                                self.events.put(
+                                    (
+                                        "reading",
+                                        (
+                                            display_value,
+                                            last_measured_target,
+                                            decision,
+                                        ),
+                                    )
+                                )
+                        wait_interval = decision.interval if decision else interval
+
+                except Exception as exc:
+                    logging.exception("Brightness update failed")
+                    self.events.put(("status", ("Update failed", str(exc), "error")))
+                    wait_interval = adaptive.current_interval if adaptive else interval
+
+                worker_stop_event.wait(
+                    wait_interval if adaptive else self.power_aware_interval(wait_interval)
+                )
+        finally:
+            if session is not None:
+                session.close()
 
         if self.worker_thread is threading.current_thread():
             self.worker_thread = None
@@ -1923,6 +1989,10 @@ class BrightnessApp(ctk.CTk):
         self.on_close()
 
     def on_close(self):
+        try:
+            self._persist_settings()
+        except Exception:
+            pass
         if self.close_to_tray_var.get() and self.tray_icon is not None:
             self.withdraw()
             return

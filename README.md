@@ -33,7 +33,8 @@ The result is a small, privacy-conscious utility that is especially useful on Wi
 ## Highlights
 
 - **Automatic brightness control** based on short webcam samples.
-- **Two sampling modes:** keep a predictable fixed interval or use Smart Adaptive mode.
+- **Two sampling modes:** keep a predictable fixed interval or use Smart Adaptive mode, which schedules its own measurements.
+- **Persistent settings:** camera, mode, interval, theme, and tray preferences are saved to `%APPDATA%\Adaptive Brightness Webcam\settings.json` and restored on every launch.
 - **Privacy first:** frames are processed in memory; no images or videos are saved or uploaded.
 - **Stable transitions:** median sampling, exposure calibration, smoothing, deadband, hysteresis, and gradual brightness ramps reduce flicker.
 - **Scene-aware measurement:** analyzes the center 80% of the frame, luminance percentiles, contrast, highlights, and dim-scene behavior.
@@ -60,7 +61,7 @@ For a comfortable starting point:
 
 - Keep the webcam uncovered and pointed toward the room.
 - Avoid pointing it directly at a lamp or a bright window.
-- New installations start with **Smart Adaptive**, using a 60-second maximum by default for faster response during changes and fewer camera wakeups when the room is stable. **Fixed Interval** remains available with its existing 120-second default; advanced Smart mode users can raise its maximum to 120 seconds.
+- New installations start with **Smart Adaptive**, which checks frequently while your lighting is changing and backs off to sparse checks (up to two minutes apart) when the room is stable — there are no interval limits to configure. **Fixed Interval** remains available with its existing 120-second default.
 - Use **Test camera** before starting automation.
 - If you use an external monitor, verify that it supports Windows brightness control.
 
@@ -76,17 +77,30 @@ For each check, the app:
 6. Maps the result through a configurable comfort curve.
 7. Applies smoothing and hysteresis to avoid flicker.
 8. Sends the target to Windows with `powercfg`; larger changes are ramped gradually.
-9. Releases the webcam immediately after sampling.
+9. In Fixed Interval mode, releases the webcam immediately after sampling. In Smart Adaptive mode, keeps one camera session open for the whole run so the webcam is not restarted for every check, and releases it when automation stops.
 
-In **Smart Adaptive** mode, `AdaptiveSamplingController` keeps a short history of
-valid observations, estimates camera noise with a rolling median/MAD, and filters
-the signal with an EMA. It requires consecutive stable observations before
-increasing the interval, grows it progressively toward the configured maximum
-(60 seconds by default), and quickly reduces it toward the configured minimum
-after a sustained or rapid change. After a rapid change it remains at the
-minimum for several confirming samples before growing again.
-Invalid samples never enter the history. Fixed Interval mode bypasses this
-controller and retains the existing scheduling behavior.
+In **Smart Adaptive** mode, `AdaptiveSamplingController` schedules every
+measurement autonomously — there are no user-configured interval limits. It
+keeps a short history of valid observations, filters the signal with an EMA,
+estimates camera noise with a rolling median/MAD, and tracks the robust
+(Theil–Sen) rate of change. When light is changing rapidly, or the current
+brightness is far from the desired one, the interval drops to the internal
+5-second minimum and stays there for confirmation samples; when consecutive
+observations prove the room is stable, the interval grows geometrically up to
+the internal 120-second maximum, so a stable room is checked only a few dozen
+times an hour. A sudden change that happens just after a sample is therefore
+detected within at most 120 seconds and then re-checked every 5 seconds until
+the new level settles. Invalid samples never enter the history.
+
+Brightness changes in Smart Adaptive mode also pass through
+`BrightnessChangeGate`: the first measurements after Start are a
+stabilization period (nothing is applied), insignificant changes inside the
+deadband are ignored, moderate changes need confirmation from consecutive
+samples, successive changes are rate- and magnitude-limited, and only large
+changes apply immediately. Together with the camera session this makes Smart
+Adaptive calm: no camera restart flicker and no brightness hunting.
+Fixed Interval mode bypasses the scheduler and gate and retains the existing
+scheduling behavior.
 
 The displayed camera value is a relative, camera-derived luminance estimate—not a physical lux measurement. Different cameras, framing, exposure, and white balance can produce different values in the same room.
 
@@ -95,14 +109,14 @@ The displayed camera value is a relative, camera-derived luminance estimate—no
 | Setting | What it does |
 |---|---|
 | **Camera** | Selects the webcam index used for sampling. |
-| **Sampling mode** | **Fixed Interval** preserves a user-selected schedule. **Smart Adaptive** adjusts between configurable 2–60 second limits by default; 120 seconds remains available as an advanced upper limit. |
+| **Sampling mode** | **Fixed Interval** preserves a user-selected schedule. **Smart Adaptive** schedules measurements automatically (internal 5–120 second bounds) based on lighting stability and rate of change. |
 | **Check interval** | Fixed Interval schedule. Minimum: 30 seconds. The default is 120 seconds. This control is shown only in Fixed Interval mode. |
-| **Smart Mode Limits** | Smart Adaptive minimum and maximum intervals. Defaults: 2 seconds minimum, 60 seconds maximum, and a 5-second initial interval. These controls are shown only in Smart Adaptive mode. |
+| **Settings file** | Camera, sampling mode, fixed interval, theme, and tray preferences persist in `%APPDATA%\Adaptive Brightness Webcam\settings.json` and are restored automatically on launch. Corrupted files fall back to defaults; interval keys written by older versions are ignored. |
 | **Appearance** | **Auto** follows day/night; **Windows** follows the system theme. |
 | **Launch with Windows** | Starts the app automatically when you sign in. |
 | **Close to tray** | Hides the window while leaving the app running in the system tray. |
 
-When running on battery, Fixed Interval mode automatically increases the effective wait between checks. Smart Adaptive mode uses its configured interval bounds directly so a sudden change is not delayed by a second, hidden multiplier. Smart Adaptive also shows the current interval, stability state, trend, and whether the next wait is increasing or decreasing.
+When running on battery, Fixed Interval mode automatically increases the effective wait between checks. Smart Adaptive mode uses its internal interval bounds directly so a sudden change is not delayed by a second, hidden multiplier. Smart Adaptive also shows the current interval, stability state, trend, and whether the next wait is increasing or decreasing.
 
 ## Privacy and compatibility
 
@@ -126,7 +140,7 @@ Many external monitors do not accept software brightness commands from Windows. 
 
 ### The response is too slow or too bright
 
-Reduce the fixed interval, make sure the camera is facing the room, and adjust `BrightnessConfig` in `adaptive_brightness.py`. Fixed Interval battery mode intentionally adds extra delay; Smart Adaptive uses its configured bounds.
+Reduce the fixed interval, make sure the camera is facing the room, and adjust `BrightnessConfig` in `adaptive_brightness.py`. Fixed Interval battery mode intentionally adds extra delay; Smart Adaptive uses its internal bounds. The brightness curve is calibrated so an ambient reading of about 170.9 maps to 57% brightness.
 
 ## Manual webcam validation
 
@@ -137,10 +151,10 @@ lighting, and whether the display accepts Windows brightness commands.
 1. Select the webcam, click **Test camera**, and confirm that a numeric ambient
    value and target brightness are shown. Check that the camera privacy indicator
    turns off after the short sample.
-2. Select **Smart Adaptive**, keep the default 2–60 second limits, start
-   automation, and leave the room stable for at least 10 minutes. Confirm that
-   the diagnostic interval grows toward 60 seconds and the camera is active only
-   during samples.
+2. Select **Smart Adaptive**, start automation, and leave the room stable
+   for at least 10 minutes. Confirm that the diagnostic interval grows toward
+   120 seconds, the camera LED stays on (one session, no repeated restarts),
+   and brightness does not change during the first stabilization samples.
 3. Move from a dark room into a bright room, then repeat from bright to dark.
    Confirm that the next reading changes the target and that the displayed
    interval falls to 2 seconds for confirmation samples before growing again.
@@ -157,11 +171,12 @@ lighting, and whether the display accepts Windows brightness commands.
    sampling after the device becomes available.
 8. While running, switch between **Fixed Interval** and **Smart Adaptive**.
    The current run stops explicitly; start automation again to apply the newly
-   selected mode. Verify Fixed Interval retains its configured value and Smart
-   Adaptive starts with its configured limits.
+   selected mode. Verify Fixed Interval retains its configured value, then
+   close and relaunch the app and confirm camera, mode, and interval are
+   restored from the settings file.
 9. Repeat the stable-lighting check on AC power and battery power. Fixed
    Interval applies its existing battery delay; Smart Adaptive uses its own
-   configured bounds without an additional battery multiplier.
+   internal bounds without an additional battery multiplier.
 
 ## For developers
 
@@ -187,11 +202,14 @@ python adaptive_brightness.py --camera 0 --mode fixed --interval 120
 Run the controller with adaptive sampling:
 
 ```powershell
-python adaptive_brightness.py --camera 0 --mode smart --minimum-interval 2 --maximum-interval 60
+python adaptive_brightness.py --camera 0 --mode smart
 ```
 
 The CLI defaults to Smart Adaptive mode. Use `--mode fixed` explicitly when
-you want the fixed schedule and its 120-second default.
+you want the fixed schedule and its 120-second default. The old
+`--minimum-interval` / `--maximum-interval` flags are still accepted for
+backwards compatibility but are ignored: Smart Adaptive has no
+user-configured interval limits.
 
 Take one sample and exit:
 
