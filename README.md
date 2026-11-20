@@ -23,28 +23,7 @@
 
 ---
 
-## Overview
-
-Most laptops adjust brightness only by hand. Adaptive Brightness Webcam watches the light around you through the built-in webcam and keeps the screen at a comfortable level as your room changes — lights on or off, daylight fading, a lamp switched on in the evening.
-
-It is designed to be **calm and trustworthy**:
-
-- The webcam wakes only for a split-second measurement and turns off again — it is never held open.
-- Brightness changes are filtered, confirmed, and ramped, so the screen never hunts or flickers.
-- Every brightness change is **applied through WMI and read back from the display**, so what the app reports is what the panel actually shows.
-
-## Key features
-
-- **Smart Adaptive mode** — fully autonomous measurement scheduling: frequent checks while your lighting is changing, sparse checks (up to every 2 minutes) in a stable room. No interval settings to tune.
-- **Intermittent camera capture** — one controlled cycle per check: open, discard warm-up frames while auto-exposure settles, capture, release. The camera LED is off between checks.
-- **Verified Windows brightness control** — WMI `WmiSetBrightness` (the same mechanism as the Windows brightness slider) with immediate readback verification, retries with backoff, and honest *requested / applied / verified* state tracking.
-- **Field-calibrated comfort curve** — tuned over several rounds of real-world testing on actual hardware, with scene compensation that is capped so bright rooms cannot overshoot.
-- **Anti-flicker gating** — stabilization period after Start, a deadband for insignificant changes, confirmation for moderate changes, and rate/step limits.
-- **Persistent settings** — camera, mode, interval, theme, and tray preferences survive restarts and Windows reboots.
-- **System tray** — runs quietly in the tray with quick controls; optional launch with Windows.
-- **Private by design** — frames are processed in memory only. Nothing is recorded, saved, or sent anywhere. No account, no network, no telemetry.
-
-## Download and installation
+## Download
 
 1. Go to the [**v1.1.0 release**](https://github.com/Arman-Kohan/adaptive-brightness-webcam/releases/tag/v1.1.0).
 2. Download either:
@@ -55,6 +34,31 @@ It is designed to be **calm and trustworthy**:
 > **Windows SmartScreen:** the executable is not code-signed, so Windows may show a warning on first run. Choose **More info → Run anyway**. This is expected for unsigned open-source builds; you can also build the executable yourself from source (see [Development](#development)).
 
 Upgrading from an older version: just replace the old `.exe` with the new one. Your settings are kept (see below). If the new file lives in a different folder and you use *Launch with Windows*, toggle that option off and on once so Windows points at the new location.
+
+---
+
+## Overview
+
+**Your webcam becomes your ambient-light sensor.** Adaptive Brightness Webcam automatically adjusts your Windows laptop's screen brightness as the lighting around you changes — without requiring a dedicated ambient-light sensor.
+
+It is made for everyday use: choose your webcam, start automation, and let the app handle the adjustments in the background.
+
+## Why use it?
+
+- **Automatic comfort** — Smart Adaptive responds to changing room light and checks less often when the lighting is stable.
+- **No extra sensor needed** — it estimates ambient light through your existing webcam.
+- **Privacy-conscious** — camera frames are processed in memory only; nothing is recorded, saved, or sent over the network.
+- **Quiet by design** — the webcam is released after each brief measurement, and the app can stay in the system tray.
+- **Verified brightness updates** — changes are applied through Windows WMI and read back from the display.
+
+## Key features
+
+- **Smart Adaptive and Fixed Interval modes** — choose automatic scheduling or a predictable measurement interval.
+- **Brief webcam measurements** — the camera is opened only for each check and released afterward.
+- **Verified brightness control** — tracks requested, applied, and verified brightness separately, with retries when needed.
+- **Smooth adjustments** — filtering and anti-flicker safeguards help prevent distracting brightness changes.
+- **System tray and saved settings** — quick controls, optional launch with Windows, and preferences that survive restarts.
+- **No account, network connection, or telemetry** — the app works locally on your PC.
 
 ## First run
 
